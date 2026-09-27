@@ -24,7 +24,7 @@ public struct ScreenSetup: Hashable, Sendable {
 }
 
 /// A window as Accessibility reports it. `order` is the app's window order, 0 = oldest.
-public struct WindowInfo: Equatable, Sendable {
+public struct WindowInfo: Codable, Equatable, Sendable {
     public var windowID: Int
     public var bundleID: String
     public var title: String

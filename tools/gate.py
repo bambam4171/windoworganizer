@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Window Organizer gate: swift build of every product, then the WOChecks suite.
+"""Window Organizer gate: swift build of every product, the WOChecks suite, then the tools checks (Python).
 
     /usr/bin/python3 tools/gate.py check [--log PATH]
 
 The whole output goes to the log (default gate-logs/gate-<head>.log, -FAILED on a red run), never to the terminal.
-Stdout gets one `gate:` line with the totals, then the log's trailer: # HEAD / # clean / # base / # exit
+Stdout gets one `gate:` line with the totals, then the log's trailer: # HEAD / # clean / # base, the same three
+on one line ("# HEAD h clean yes base b", what the hand-in check reads), and # exit
 (base = merge-base with main). Exit 0 only when the build and every check pass.
 """
 import argparse
@@ -18,6 +19,7 @@ STEPS = [
     ('build', ['swift', 'build', '--product', 'WindowOrganizer']),
     ('build-checks', ['swift', 'build', '--product', 'WOChecks']),
     ('checks', ['swift', 'run', '--skip-build', 'WOChecks']),
+    ('tools-checks', [sys.executable, 'tools/check_tools.py']),
 ]
 
 
@@ -41,14 +43,20 @@ def main():
         if name == 'checks':
             m = re.search(r'^(\d+) passed / (\d+) failed$', r.stdout, re.M)
             summary = '%s passed / %s failed' % m.groups() if m else 'no summary line'
+        if name == 'tools-checks':
+            m = re.search(r'^Ran (\d+) tests?', r.stderr, re.M)
+            summary += ' · tools %s ok' % (m.group(1) if m else '?') if not r.returncode else ''
         if r.returncode:
             code = r.returncode
-            if name != 'checks':
+            if name == 'tools-checks':
+                summary += ' · tools failed'
+            elif name != 'checks':
                 summary = 'step %s failed' % name
             break
     clean = 'yes' if not git('status', '--porcelain') else 'no'
     base = git('merge-base', 'HEAD', 'main') or 'none'
-    trailer = ['# HEAD %s' % head, '# clean %s' % clean, '# base %s' % base, '# exit %d' % code]
+    trailer = ['# HEAD %s' % head, '# clean %s' % clean, '# base %s' % base,
+               '# HEAD %s clean %s base %s' % (head, clean, base), '# exit %d' % code]
 
     if args.log:
         log = Path(args.log)
