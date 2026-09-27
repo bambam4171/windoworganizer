@@ -18,6 +18,10 @@ public struct Plan: Equatable, Sendable {
     public var skipped: [Matcher]
     /// Windows already within 1 pt of their place.
     public var unchanged: Int
+
+    public init(moves: [Move], skipped: [Matcher], unchanged: Int) {
+        self.moves = moves; self.skipped = skipped; self.unchanged = unchanged
+    }
 }
 
 /// "Remember this desktop" for one screen: every window on it becomes a place, matched by app + order.
@@ -45,6 +49,6 @@ public func planSnapshot(_ arrangement: ScreenArrangement, windows: [WindowInfo]
     return plan
 }
 
-private func close(_ a: Frame, _ b: Frame) -> Bool {
+func close(_ a: Frame, _ b: Frame) -> Bool {
     abs(a.x - b.x) <= 1 && abs(a.y - b.y) <= 1 && abs(a.width - b.width) <= 1 && abs(a.height - b.height) <= 1
 }

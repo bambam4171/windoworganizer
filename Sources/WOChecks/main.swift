@@ -1,3 +1,3 @@
 import Foundation
 
-exit(runChecks(frameChecks + coreChecks + desktopChecks))
+exit(runChecks(frameChecks + coreChecks + desktopChecks + restoreChecks))

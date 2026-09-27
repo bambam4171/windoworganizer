@@ -1,7 +1,7 @@
 import AppKit
 import WindowOrganizerCore
 
-// WindowOrganizer (S2): a menu-bar app that finds its permission and lists the current desktop's windows.
+// WindowOrganizer (S3): a menu-bar app that remembers the current desktop's windows and puts them back (⌃⌥⌘R).
 // `--list` prints what it sees as JSON and quits: the live check, run as the .app (`open -n --stdout`, spike limit 3).
 
 @MainActor
@@ -23,12 +23,17 @@ if CommandLine.arguments.contains("--list") {
 final class MenuController: NSObject, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
+    /// What the last Remember or Restore did; shown until the next one.
+    var lastResult: String?
 
     override init() {
         super.init()
         item.button?.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: "Window Organizer")
         menu.delegate = self
         item.menu = menu
+        if !HotKey.register(.restore, action: { [weak self] in self?.restore() }) {
+            lastResult = "The shortcut \(Shortcut.restore.display) is taken by another app"
+        }
     }
 
     /// Rebuilt on every open, so the status line is always the current desktop's.
@@ -38,6 +43,15 @@ final class MenuController: NSObject, NSMenuDelegate {
         let status = StatusLine.text(trusted: report.trusted, desktop: report.desktop,
                                      windows: report.windows.count, screens: report.screens.count)
         menu.addItem(NSMenuItem(title: status, action: nil, keyEquivalent: ""))
+        if let lastResult { menu.addItem(NSMenuItem(title: lastResult, action: nil, keyEquivalent: "")) }
+        menu.addItem(.separator())
+        let restore = NSMenuItem(title: "Restore", action: report.trusted ? #selector(restore) : nil, keyEquivalent: Shortcut.restore.key)
+        restore.keyEquivalentModifierMask = [.control, .option, .command]
+        restore.target = self
+        menu.addItem(restore)
+        let remember = NSMenuItem(title: "Remember this desktop", action: report.trusted ? #selector(remember) : nil, keyEquivalent: "")
+        remember.target = self
+        menu.addItem(remember)
         if !report.trusted {
             let open = NSMenuItem(title: "Open Settings…", action: #selector(openSettings), keyEquivalent: "")
             open.target = self
@@ -47,6 +61,8 @@ final class MenuController: NSObject, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Quit Window Organizer", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
+    @objc func restore() { lastResult = restoreNow() }
+    @objc func remember() { lastResult = rememberNow() }
     @objc func openSettings() { NSWorkspace.shared.open(Permission.settingsURL) }
 }
 
