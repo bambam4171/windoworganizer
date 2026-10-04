@@ -63,14 +63,14 @@ final class WindowWatcher {
 
 /// Moves one new window to its remembered place; nothing else moves. Nil when it has no place (the menu keeps its line).
 @MainActor
-func placeNewWindow(_ element: AXUIElement, app: String) -> String? {
-    let (report, listing) = snapshot()
-    guard report.trusted, listing.warnings.isEmpty,
+func placeNewWindow(_ element: AXUIElement, app: String, _ p: WorkspaceProviders = .live) -> String? {
+    if LayoutsWindow.shown?.dirty == true { return nil }
+    guard let (report, listing, ctx) = try? guardedSnapshot(p),
+          report.trusted, listing.warnings.isEmpty,
           let id = listing.elements.first(where: { CFEqual($0.value, element) })?.key,
-          let layouts = try? layoutStore().load(),
-          let plan = planRestore(layouts, windows: report.windows, screens: report.screens,
-                                 desktops: desktopNumbers(screens: report.screens))
+          let layouts = try? p.store().load(),
+          let plan = planRestore(layouts, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
     else { return nil }
-    let r = RestoreSession.shared.apply(onlyWindow(plan, id), listing: listing, screens: report.screens)
+    let r = RestoreSession.shared.apply(onlyWindow(plan, id), listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx })
     return ResultLine.newWindow(r, app: app, desktop: report.desktop?.number, at: clock())
 }

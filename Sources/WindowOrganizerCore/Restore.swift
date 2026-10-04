@@ -149,17 +149,21 @@ public struct ApplyResult: Equatable, Sendable {
     public var failed: Int
     public var unchanged: Int
     public var notOpen: Int
+    /// Moves not made because the desktop or screen changed while the plan ran.
+    public var cancelled: Int
 
-    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int) {
+    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int, cancelled: Int = 0) {
         self.placed = placed; self.keptMinimum = keptMinimum; self.failed = failed
-        self.unchanged = unchanged; self.notOpen = notOpen
+        self.unchanged = unchanged; self.notOpen = notOpen; self.cancelled = cancelled
     }
 }
 
 /// Set, read back, one retry (plan §3). A window at its place but larger counts as "kept its minimum size".
-public func applyPlan(_ plan: Plan, mover: WindowMover) -> ApplyResult {
+/// `stillValid` is asked before each move; on the first false no further window is touched and the rest count as cancelled.
+public func applyPlan(_ plan: Plan, mover: WindowMover, stillValid: () -> Bool = { true }) -> ApplyResult {
     var r = ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: plan.unchanged, notOpen: plan.skipped.count)
-    for move in plan.moves {
+    for (index, move) in plan.moves.enumerated() {
+        guard stillValid() else { r.cancelled = plan.moves.count - index; break }
         guard move.to.isValid else { r.failed += 1; continue }
         mover.setFrame(move.to, of: move.windowID)
         var now = mover.frame(of: move.windowID)
@@ -178,6 +182,7 @@ public func applyPlan(_ plan: Plan, mover: WindowMover) -> ApplyResult {
 /// The menu's last-result line (plan §4): what happened, on which desktop, when.
 public enum ResultLine {
     public static func restored(_ r: ApplyResult, desktop: Int?, at time: String) -> String {
+        if r.cancelled > 0 { return "Stopped: the desktop changed. Placed \(r.placed + r.keptMinimum), \(r.cancelled) left as they were · \(time)" }
         let inPlace = r.placed + r.unchanged
         var parts: [String] = []
         if inPlace == 0 && r.keptMinimum == 0 && r.failed == 0 {
@@ -194,6 +199,7 @@ public enum ResultLine {
 
     /// After a new window was placed; nil when it had no place to go (then the menu keeps its line).
     public static func newWindow(_ r: ApplyResult, app: String, desktop: Int?, at time: String) -> String? {
+        if r.cancelled > 0 { return "Stopped: the desktop changed. New \(app) window left as it was · \(time)" }
         let what: String
         if r.placed > 0 { what = "placed" }
         else if r.keptMinimum > 0 { what = "placed, it kept its minimum size" }
