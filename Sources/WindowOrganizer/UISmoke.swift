@@ -946,6 +946,12 @@ func runUISmoke() -> Int32 {
             return one.count == 1 && one[0].name == "Group 1" && one[0].members == [termMember] && one[0].screen == nil && one[0].mode == .tiled
                 && before == after && g.status.stringValue.contains("already called") && g.dirty
         })
+        check("groups: a name is trimmed when typed and stored trimmed", {
+            try layoutStore().save(Layouts())
+            let g = groupsWindow(); g.addGroup(openMembers: false); _ = g.addMember(0, bundleID: "com.apple.Terminal", pattern: nil)
+            g.rename(0, "  Spaced out \n"); g.save()
+            return try loadGroups().map(\.name) == ["Spaced out"]
+        })
         check("groups: a memberless group is dropped on Save with the count in the status", {
             try layoutStore().save(Layouts())
             let g = groupsWindow(); g.addGroup(openMembers: false); g.save()
