@@ -62,6 +62,19 @@ let autoChecks: [(String, @Sendable () throws -> Void)] = [
         let moved = try unwrap(movedOnA(l))
         try expect(moved.isSubset(of: [1, 2]), "only A's windows move: \(moved)")
     }),
+    ("planAuto drops a move whose target lies off the screen", {
+        var l = Layouts()
+        let off = Placement(matcher: Matcher(bundleID: "a"), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 0.5),
+                            pixel: Frame(x: 3000, y: 100, width: 300, height: 300), screenUUID: "MBP", visibleFrame: laptop.visibleFrame)
+        let on = Placement(matcher: Matcher(bundleID: "b"), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 0.5),
+                           pixel: Frame(x: 100, y: 100, width: 300, height: 300), screenUUID: "MBP", visibleFrame: laptop.visibleFrame)
+        l.set(ScreenArrangement(kind: .snapshot([off, on])), setup: autoSetup, desktop: 1, screen: "MBP")
+        let desktops = ["MBP": 1, "DELL": 1]
+        let restore = try unwrap(planRestore(l, windows: kindWindows, screens: [laptop, dell], desktops: desktops))
+        try expect(restore.moves.contains { $0.windowID == 1 }, "Restore itself would send window 1 off screen")
+        let auto = try unwrap(planAuto(l, windows: kindWindows, screens: [laptop, dell], desktops: desktops, screen: "MBP"))
+        try expectEqual(auto.moves.map(\.windowID), [2])
+    }),
     ("planAuto per kind: zones and auto-tile give Restore's plan restricted to A", {
         let zone = Zone(rect: UnitRect(x: 0, y: 0, width: 1, height: 1), members: [ZoneMember(bundleID: "a"), ZoneMember(bundleID: "b")])
         let zoned = try unwrap(movedOnA(twoScreens(.zones([zone]))))
