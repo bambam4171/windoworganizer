@@ -27,11 +27,15 @@ func runMigrate(arguments: [String], environment: [String: String]) -> Int32 {
     }
     let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd-HHmmss"
     let layouts = migrateLayouts(from: source, to: target, apply: apply, keep: keep, date: stamp.string(from: Date()))
-    if layouts == .conflict, let a = layoutSummary(at: source), let b = layoutSummary(at: target) {
+    if layouts == .conflict || keep != nil, let a = layoutSummary(at: source), let b = layoutSummary(at: target) {
         print("Review layouts: \(a).\nCurrent layouts: \(b).")
     }
-    let preferences = migratePreferences(from: ReviewPreferences(), to: OurPreferences(), apply: apply)
-    for line in migrationLines(layouts: layouts, preferences: preferences, apply: apply) { print(line) }
+    let review = ReviewPreferences()
+    let mayMigrate = preferencesMayMigrate(after: layouts)
+    let preferences = mayMigrate ? migratePreferences(from: review, to: OurPreferences(), apply: apply) : []
+    let automation = mayMigrate ? automationOnInReview(from: review) : []
+    for line in migrationLines(layouts: layouts, preferences: preferences, apply: apply, automationOn: automation) { print(line) }
+    if apply, mayMigrate { print("Preferences were written to the defaults domain \(Bundle.main.bundleIdentifier ?? "local.windoworganizer.app").") }
     if case .refused = layouts { return 1 }
     return layouts == .conflict ? 2 : 0
 }

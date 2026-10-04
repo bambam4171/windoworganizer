@@ -88,13 +88,31 @@ let migrationChecks: [(String, @Sendable () throws -> Void)] = [
         try expect(!FileManager.default.fileExists(atPath: f.to.path), "target created")
     }),
     ("preference migration copies only the known keys and never over an existing value", {
-        let old = MemoryPreferences(["paused": true, "restoreAtLaunch": true, "restoreKey": "r", "launchAtLogin": true, "other": 1])
-        let new = MemoryPreferences(["restoreAtLaunch": false])
+        let old = MemoryPreferences(["paused": true, "restoreKey": "r", "launchAtLogin": true, "other": 1])
+        let new = MemoryPreferences(["restoreKey": "x"])
         let copied = migratePreferences(from: old, to: new, apply: true)
-        try expectEqual(copied.sorted(), ["paused", "restoreKey"])
+        try expectEqual(copied, ["paused"])
         try expectEqual(new.values["paused"] as? Bool, true)
-        try expectEqual(new.values["restoreAtLaunch"] as? Bool, false)
+        try expectEqual(new.values["restoreKey"] as? String, "x")
         try expect(new.values["launchAtLogin"] == nil && new.values["other"] == nil, "unknown key copied")
+    }),
+    ("automation switches on in the review app are named and never written", {
+        let old = MemoryPreferences(["restoreAtLaunch": true, "restoreOnScreens": true, "arrangeNewWindows": true, "paused": false])
+        let new = MemoryPreferences()
+        let copied = migratePreferences(from: old, to: new, apply: true)
+        try expectEqual(automationOnInReview(from: old), ["restoreAtLaunch", "restoreOnScreens", "arrangeNewWindows"])
+        for key in automationPreferenceKeys { try expect(!copied.contains(key) && new.values[key] == nil, "\(key) copied") }
+        try expect(!new.writes.contains { automationPreferenceKeys.contains($0) }, "automation written")
+        let off = MemoryPreferences(["restoreAtLaunch": false])
+        try expect(automationOnInReview(from: off).isEmpty, "off switch named")
+        let lines = migrationLines(layouts: .alreadyDone, preferences: copied, apply: true, automationOn: automationOnInReview(from: old))
+        try expect(lines.contains { $0.contains("restoreAtLaunch") && $0.contains("not copied") }, "\(lines)")
+    }),
+    ("preferences wait for the layouts: a conflict or a refusal writes none", {
+        try expect(!preferencesMayMigrate(after: .conflict) && !preferencesMayMigrate(after: .refused("x")), "half migration")
+        for ok: MigrationOutcome in [.nothingToMigrate, .alreadyDone, .copied(setups: 1), .resolved(keep: .review, backup: "b")] {
+            try expect(preferencesMayMigrate(after: ok), "\(ok)")
+        }
     }),
     ("preference migration dry run writes nothing", {
         let old = MemoryPreferences(["paused": true]), new = MemoryPreferences()

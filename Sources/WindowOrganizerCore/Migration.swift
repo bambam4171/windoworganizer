@@ -89,7 +89,22 @@ public protocol PreferenceStore: AnyObject {
 }
 
 /// Login registration is separate OS state and is not a preference, so it is not on this list.
-public let migratedPreferenceKeys = ["paused", "restoreAtLaunch", "restoreOnScreens", "arrangeNewWindows", "restoreKey"]
+/// The three automation switches are not here either: a migration never switches automation on (PLAN row 6).
+public let migratedPreferenceKeys = ["paused", "restoreKey"]
+public let automationPreferenceKeys = ["restoreAtLaunch", "restoreOnScreens", "arrangeNewWindows"]
+
+/// The automation switches that are on in the review app. Read only: they are named to the user, never copied.
+public func automationOnInReview(from: PreferenceStore) -> [String] {
+    automationPreferenceKeys.filter { (from.value(forKey: $0) as? Bool) == true }
+}
+
+/// Preferences follow the layouts only when the layouts did not end in a conflict or a refusal (no half migration).
+public func preferencesMayMigrate(after layouts: MigrationOutcome) -> Bool {
+    switch layouts {
+    case .conflict, .refused: return false
+    default: return true
+    }
+}
 
 /// Copies the known keys that `to` does not have yet; returns the keys copied (or, with apply false, that would be).
 @discardableResult
@@ -104,7 +119,7 @@ public func migratePreferences(from: PreferenceStore, to: PreferenceStore, apply
 }
 
 /// What `--migrate` prints: one line for the layouts, one for the preferences, and what to do next.
-public func migrationLines(layouts: MigrationOutcome, preferences: [String], apply: Bool) -> [String] {
+public func migrationLines(layouts: MigrationOutcome, preferences: [String], apply: Bool, automationOn: [String] = []) -> [String] {
     let verb = apply ? "Copied" : "Would copy"
     var lines: [String]
     switch layouts {
@@ -119,6 +134,9 @@ public func migrationLines(layouts: MigrationOutcome, preferences: [String], app
     case .refused(let why): lines = ["Layouts: not copied. \(why)"]
     }
     lines.append(preferences.isEmpty ? "Preferences: nothing to bring over." : "Preferences: \(verb.lowercased()) \(preferences.joined(separator: ", ")).")
+    if !automationOn.isEmpty {
+        lines.append("Automation was on in the review app (\(automationOn.joined(separator: ", "))). It was not copied: turn it on in Settings if you want it.")
+    }
     if !apply { lines.append("This was a dry run. Run again with --migrate --apply to copy.") }
     return lines
 }
