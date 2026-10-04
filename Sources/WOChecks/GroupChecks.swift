@@ -102,6 +102,10 @@ let groupChecks: [(String, @Sendable () throws -> Void)] = [
         try refused(with(group(mode: .saved([position, position]))), "duplicate position")
         let negative = GroupPosition(matcher: Matcher(bundleID: "com.a", order: -1), fraction: position.fraction)
         try refused(with(group(mode: .saved([negative]))), "negative order")
+        let g = #"{"id":"x","name":"NAME","members":[{"bundleID":"a"}],"desktops":[],"mode":{"mode":"tiled"}}"#
+        let dup = "{\"schema\":3,\"setups\":{},\"groups\":[" + g.replacingOccurrences(of: "NAME", with: "One") + "," + g.replacingOccurrences(of: "NAME", with: "Two") + "]}"
+        do { _ = try LayoutStore.decode(Data(dup.utf8)); throw CheckFailure(description: "decoded a duplicate id") }
+        catch let e as LayoutStoreError { try expectEqual(e, .invalidLayout) }
         var many = Layouts(); for i in 0...Layouts.maxGroups { many.setGroup(group("g\(i)", "G\(i)")) }
         try refused(many, "201 groups")
     }),
