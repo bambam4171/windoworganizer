@@ -116,6 +116,15 @@ let sortChecks: [(String, @Sendable () throws -> Void)] = [
                                 named(8, app: "Terminal", bundle: "com.t", title: "zsh", order: 1)], settings: ArrangeSettings(manualOrder: order))
         try expectEqual(got.map(\.windowID), [8, 7])
     }),
+    ("a closed window's entry cannot take a later entry's window (B1)", {
+        let a = named(1, app: "Safari", bundle: "com.s", title: "A", order: 0), x = named(2, app: "Chrome", bundle: "com.c", title: "X", order: 0)
+        let b = named(3, app: "Safari", bundle: "com.s", title: "B", order: 1)
+        let order = manualOrder(for: [a, x, b])
+        // A closed: B is now Safari's first window. Entry A must not take B ahead of X.
+        let got = arrangeOrder([named(12, app: "Chrome", bundle: "com.c", title: "X", order: 0),
+                                named(13, app: "Safari", bundle: "com.s", title: "B", order: 0)], settings: ArrangeSettings(manualOrder: order))
+        try expectEqual(got.map(\.windowID), [12, 13])
+    }),
     ("by name ignores the stored order, and switching back restores it", {
         let ws = [named(1, app: "Zed", bundle: "com.z"), named(2, app: "Ant", bundle: "com.a")]
         var s = ArrangeSettings(manualOrder: manualOrder(for: ws))
