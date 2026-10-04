@@ -29,14 +29,14 @@ public func captureWorkspace(_ selection: WorkspaceSelection, windows: [WindowIn
 }
 
 /// An immediate grid is a draft: it moves only this screen's currently visible windows and writes no file.
-public func planAutomaticWorkspace(_ selection: WorkspaceSelection, windows: [WindowInfo], screens: [ScreenInfo], desktops: [String: Int], gap: Int = 0) throws -> Plan {
+public func planAutomaticWorkspace(_ selection: WorkspaceSelection, windows: [WindowInfo], screens: [ScreenInfo], desktops: [String: Int], settings: ArrangeSettings = ArrangeSettings()) throws -> Plan {
     guard let screen = screens.first(where: { $0.uuid == selection.screenUUID }) else { throw WorkspaceError.screenDisconnected }
     guard selection.isVisible(desktops: desktops) else { throw WorkspaceError.desktopNotVisible }
-    let mine = windows.filter { $0.screenUUID == selection.screenUUID }
-        .sorted { ($0.bundleID, $0.order, $0.windowID) < ($1.bundleID, $1.order, $1.windowID) }
+    let mine = arrangeOrder(windows.filter { $0.screenUUID == selection.screenUUID }
+        .sorted { ($0.bundleID, $0.order, $0.windowID) < ($1.bundleID, $1.order, $1.windowID) }, settings: settings)
     guard !mine.isEmpty else { throw WorkspaceError.noWindows }
     var plan = Plan(moves: [], skipped: [], unchanged: 0, tiles: [mine.map(\.windowID)])
-    let framed = applyGap(gridTile(mine.count, in: screen.visibleFrame), gap: gap)
+    let framed = applyGap(gridTile(mine.count, in: screen.visibleFrame), gap: settings.gapPoints)
     plan.gapSkipped = framed.skipped
     for (w, frame) in zip(mine, framed.frames) {
         if close(w.frame, frame) { plan.unchanged += 1 }

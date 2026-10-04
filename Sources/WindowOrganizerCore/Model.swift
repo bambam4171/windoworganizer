@@ -31,10 +31,12 @@ public struct WindowInfo: Codable, Equatable, Sendable {
     public var frame: Frame
     public var screenUUID: String
     public var order: Int
+    /// The name the user sees for the app ("Terminal"); nil when the app has not reported one yet.
+    public var appName: String?
 
-    public init(windowID: Int, bundleID: String, title: String, frame: Frame, screenUUID: String, order: Int) {
+    public init(windowID: Int, bundleID: String, title: String, frame: Frame, screenUUID: String, order: Int, appName: String? = nil) {
         self.windowID = windowID; self.bundleID = bundleID; self.title = title
-        self.frame = frame; self.screenUUID = screenUUID; self.order = order
+        self.frame = frame; self.screenUUID = screenUUID; self.order = order; self.appName = appName
     }
 }
 

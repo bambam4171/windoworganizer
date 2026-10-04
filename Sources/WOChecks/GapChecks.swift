@@ -172,7 +172,7 @@ let gapChecks: [(String, @Sendable () throws -> Void)] = [
     ("an immediate grid carries the gap and flags no room", {
         let ws = (1...4).map { window($0, term, "w\($0)", $0 - 1, anywhere) }
         let sel = WorkspaceSelection(screenUUID: "MBP", desktop: 1)
-        let p = try planAutomaticWorkspace(sel, windows: ws, screens: [laptop], desktops: ["MBP": 1], gap: 8)
+        let p = try planAutomaticWorkspace(sel, windows: ws, screens: [laptop], desktops: ["MBP": 1], settings: ArrangeSettings(gap: 8))
         let fs = p.moves.sorted { $0.windowID < $1.windowID }.map(\.to)
         try expectEqual(fs, presetFrames(.grid, count: 4, in: laptop.visibleFrame, gap: 8))
     }),
