@@ -30,6 +30,7 @@ extension Layouts {
                 try require((settings.manualOrder?.count ?? 0) <= ArrangeSettings.maxManualOrder && (settings.manualOrder ?? []).allSatisfy { !$0.bundleID.isEmpty })
             }
         }
+        try validateGroups()
         try require(Set(rules.map(\.bundleID)).count == rules.count)
         for rule in rules { try require(!rule.bundleID.isEmpty && !rule.screen.isEmpty && rule.desktop >= 0 && rule.desktop <= 1000 && rule.area.isWithinUnit) }
     }
