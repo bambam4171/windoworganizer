@@ -19,7 +19,7 @@ public func reviewStateDirectory(home: URL) -> URL {
     home.appendingPathComponent("Library/Application Support/WindowOrganizerGPTReview")
 }
 
-/// Copies layouts.json from `from` to `to`. The source must be a valid layout file (schema 1 or 2); a newer or damaged
+/// Copies layouts.json from `from` to `to`. The source must be a valid layout file (schema 1 to 3); a newer or damaged
 /// one is refused. Different layouts already in `to` are a conflict: nothing is written and no side is chosen. With
 /// apply false nothing is written at all. The copy is written to a temporary file, read back and compared, then renamed.
 public func migrateLayouts(from: URL, to: URL, apply: Bool, keep: MigrationKeep? = nil, date: String = "") -> MigrationOutcome {

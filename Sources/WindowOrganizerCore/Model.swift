@@ -160,7 +160,7 @@ public struct ScreenArrangement: Codable, Equatable, Sendable {
 /// Everything the user arranged: setup key → desktop number → screen UUID → arrangement.
 /// Desktops are keyed by position ("1", "2", …), not by Space ID, which changes when desktops are recreated.
 public struct Layouts: Codable, Equatable, Sendable {
-    public static let currentSchema = 2
+    public static let currentSchema = 3
 
     public var schema: Int
     public var setups: [String: [String: [String: ScreenArrangement]]]
@@ -169,15 +169,18 @@ public struct Layouts: Codable, Equatable, Sendable {
     /// Gap and the other arrange settings (WINDOW-GAP S1): desktop number → screen UUID. Outside the setups like the
     /// rules, so a screen keeps them with or without the other displays, and removing a setup never drops them.
     public private(set) var arrange: [String: [String: ArrangeSettings]]
+    /// Window groups (WO-GROUPS G1), outside the setups. The array order is the editor's list order.
+    public internal(set) var groups: [WindowGroup]
 
     public init() {
         schema = Layouts.currentSchema
         setups = [:]
         rules = []
         arrange = [:]
+        groups = []
     }
 
-    private enum CodingKeys: String, CodingKey { case schema, setups, rules, arrange }
+    private enum CodingKeys: String, CodingKey { case schema, setups, rules, arrange, groups }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -189,15 +192,18 @@ public struct Layouts: Codable, Equatable, Sendable {
         setups = try c.decode([String: [String: [String: ScreenArrangement]]].self, forKey: .setups)
         rules = try c.decodeIfPresent([AppRule].self, forKey: .rules) ?? []
         arrange = try c.decodeIfPresent([String: [String: ArrangeSettings]].self, forKey: .arrange) ?? [:]
+        groups = try c.decodeIfPresent([WindowGroup].self, forKey: .groups) ?? []
     }
 
     /// Without rules the file is exactly as before S7.
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(schema, forKey: .schema)
+        // Schema 3 only while groups exist: an older app then refuses the file instead of dropping the groups on its next save.
+        try c.encode(groups.isEmpty ? 2 : 3, forKey: .schema)
         try c.encode(setups, forKey: .setups)
         if !rules.isEmpty { try c.encode(rules, forKey: .rules) }
         if !arrange.isEmpty { try c.encode(arrange, forKey: .arrange) }
+        if !groups.isEmpty { try c.encode(groups, forKey: .groups) }
     }
 
     /// Adds the rule, or replaces the one its app already has, in place.

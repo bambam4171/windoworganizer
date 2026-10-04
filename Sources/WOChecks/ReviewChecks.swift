@@ -68,7 +68,7 @@ let reviewChecks: [(String, @Sendable () throws -> Void)] = [
     ("schema 1 migrates to schema 2 and retains its data", {
         let old = Data(#"{"schema":1,"setups":{"MBP":{"1":{"MBP":{"kind":"snapshot","placements":[]}}}}}"#.utf8)
         let l = try LayoutStore.decode(old)
-        try expectEqual(l.schema, 2)
+        try expectEqual(l.schema, Layouts.currentSchema)
         try expectEqual(l.arrangement(setup: ScreenSetup(screens: [laptop]), desktop: 1, screen: laptop.uuid)?.kind, .snapshot([]))
     }),
     ("invalid geometry and duplicate rules are rejected before persistence", {
