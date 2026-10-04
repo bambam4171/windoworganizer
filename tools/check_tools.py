@@ -41,6 +41,9 @@ class MakeAppChecks(unittest.TestCase):
         self.assertEqual(info['CFBundleExecutable'], 'WindowOrganizer')
         self.assertEqual(info['CFBundleShortVersionString'], '0.2')
         self.assertIs(info['LSUIElement'], True)
+        self.assertEqual(info['CFBundleVersion'], '8')
+        self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
+        self.assertIs(info['NSHighResolutionCapable'], True)
 
     def test_identity_is_used_when_listed_else_ad_hoc(self):
         self.assertEqual(make_app.choose_identity(LISTING_WITH), 'WindowOrganizer Local')
@@ -98,6 +101,18 @@ class IdentityChecks(unittest.TestCase):
     def test_default_keychain_is_the_login_keychain_but_only_with_create(self):
         self.assertEqual(make_local_identity.LOGIN_KEYCHAIN, Path.home() / 'Library/Keychains/login.keychain-db')
         self.assertEqual(make_local_identity.NAME, 'WindowOrganizer Local')
+
+
+class ReviewIdentityChecks(unittest.TestCase):
+    def test_no_swift_source_carries_the_review_identity(self):
+        root = Path(__file__).resolve().parent.parent
+        hits = []
+        for f in sorted((root / 'Sources').rglob('*.swift')):
+            for n, line in enumerate(f.read_text().splitlines(), 1):
+                low = line.lower()
+                if 'gptreview' in low or 'review edition' in low or 'windoworganizer.review' in low:
+                    hits.append('%s:%d' % (f.relative_to(root), n))
+        self.assertEqual(hits, [])
 
 
 if __name__ == '__main__':

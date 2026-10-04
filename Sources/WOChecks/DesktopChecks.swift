@@ -44,7 +44,7 @@ let desktopChecks: [(String, @Sendable () throws -> Void)] = [
         try expectEqual(StatusLine.text(trusted: true, desktop: nil, windows: 3, screens: 1),
                         "Desktop unknown · 3 windows on 1 screen")
         try expectEqual(StatusLine.text(trusted: false, desktop: DesktopPosition(display: "MBP", number: 2), windows: 0, screens: 2),
-                        "Permission missing: Device Control and Data Access")
+                        "Permission needed: Accessibility")
     }),
     ("--list report is sorted JSON with the permission, desktop, screens and windows", {
         let report = ListReport(trusted: false, desktop: DesktopPosition(display: "MBP", number: 4), screens: [laptop],
