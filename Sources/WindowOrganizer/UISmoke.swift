@@ -454,6 +454,14 @@ func runUISmoke() -> Int32 {
             let draft = editor.manualDraft ?? []
             let ordered = draft.map(\.windowID) == [4, 2, 1, 3] && editor.result.stringValue.contains("sorted by name")
             let reading = zip(draft, draft.dropFirst()).allSatisfy { ($0.frame.y, $0.frame.x) < ($1.frame.y, $1.frame.x) }
+            for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                editor.window.appearance = NSAppearance(named: look)
+                editor.window.contentView?.layoutSubtreeIfNeeded()
+                guard let content = editor.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return false }
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("sort-\(name).png"))
+            }
+            editor.window.appearance = nil
             editor.sortSwitch.state = .off; editor.resetDraft()
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
             return plain && ordered && reading
