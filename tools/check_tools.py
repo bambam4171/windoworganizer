@@ -108,6 +108,8 @@ class ReviewIdentityChecks(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         hits = []
         for f in sorted((root / 'Sources').rglob('*.swift')):
+            if f.name in ('Migration.swift', 'Migrate.swift'):
+                continue   # GPT-WO-S4: the one place that must name the review app, to copy out of it
             for n, line in enumerate(f.read_text().splitlines(), 1):
                 low = line.lower()
                 if 'gptreview' in low or 'review edition' in low or 'windoworganizer.review' in low:
