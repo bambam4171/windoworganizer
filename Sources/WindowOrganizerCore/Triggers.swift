@@ -14,6 +14,8 @@ public enum TriggerEvent: Equatable, Sendable {
     case spaceChanged(displays: [DisplaySpaces])
     /// An app created a window on the current desktop.
     case windowCreated
+    /// AUTO-MODE: the set of windows changed (open, close or an app quit); the app asks AutoState per screen.
+    case windowsChanged
 }
 
 public enum TriggerAction: Equatable, Sendable {
@@ -24,6 +26,8 @@ public enum TriggerAction: Equatable, Sendable {
     case arrange
     /// Move only the new window to its remembered place.
     case placeWindow
+    /// Ask AutoState for each screen with Auto mode, then arrange that screen.
+    case autoCheck
 }
 
 public struct TriggerState: Sendable {
@@ -65,6 +69,8 @@ public struct TriggerState: Sendable {
             return .arrange
         case .windowCreated:
             return paused || !desktopsVisible ? .none : .placeWindow
+        case .windowsChanged:
+            return paused || !desktopsVisible ? .none : .autoCheck
         }
     }
 

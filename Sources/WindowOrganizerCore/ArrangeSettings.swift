@@ -10,10 +10,11 @@ public struct ArrangeSettings: Codable, Equatable, Sendable {
     public var pushBackOnTop: Bool?
     public var correctResize: Bool?
     public var sortByName: Bool?
+    public var autoArrange: Bool?
 
-    public init(gap: Int? = nil, keepLive: Bool? = nil, pushBackOnTop: Bool? = nil, correctResize: Bool? = nil, sortByName: Bool? = nil) {
+    public init(gap: Int? = nil, keepLive: Bool? = nil, pushBackOnTop: Bool? = nil, correctResize: Bool? = nil, sortByName: Bool? = nil, autoArrange: Bool? = nil) {
         self.gap = gap; self.keepLive = keepLive; self.pushBackOnTop = pushBackOnTop
-        self.correctResize = correctResize; self.sortByName = sortByName
+        self.correctResize = correctResize; self.sortByName = sortByName; self.autoArrange = autoArrange
     }
 
     public static let maxGap = 64
@@ -26,6 +27,8 @@ public struct ArrangeSettings: Codable, Equatable, Sendable {
     public var pushesBackOnTop: Bool { pushBackOnTop ?? false }
     public var correctsResize: Bool { correctResize ?? true }
     public var sortsByName: Bool { sortByName ?? false }
+    /// AUTO-MODE: an open or close re-arranges this screen as Restore would.
+    public var arrangesAutomatically: Bool { autoArrange ?? false }
 
     public var isDefault: Bool { self == ArrangeSettings() }
 }
