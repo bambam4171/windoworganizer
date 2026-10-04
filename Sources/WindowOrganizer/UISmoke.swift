@@ -428,7 +428,7 @@ func runUISmoke() -> Int32 {
             editor.save()
             let seeded = try layoutStore().load()
             editor.sortSwitch.state = .on; editor.sortToggled()
-            guard editor.unsaved == ["sort setting"] else { return false }
+            guard editor.unsaved == ["gap settings"] else { return false }
             editor.applyAndSave()
             let after = try layoutStore().load()
             try layoutStore().save(before)
@@ -440,19 +440,19 @@ func runUISmoke() -> Int32 {
         check("Sort by name persists for this screen and desktop only", {
             let before = try layoutStore().load()
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
-            guard editor.sortSwitch.state == .off, !editor.unsaved.contains("sort setting") else { return false }
+            guard editor.sortSwitch.state == .off, !editor.unsaved.contains("gap settings") else { return false }
             editor.sortSwitch.state = .on; editor.sortToggled()
-            guard editor.unsaved.contains("sort setting") else { return false }
+            guard editor.unsaved.contains("gap settings") else { return false }
             editor.applyAndSave()
             let saved = try layoutStore().load()
-            let reloaded = editor.loadedSort && !editor.unsaved.contains("sort setting")
+            let reloaded = editor.loadedSettings.sortsByName && !editor.unsaved.contains("gap settings")
             let other = saved.arrangeSettings(desktop: 2, screen: screen.uuid).sortsByName
             let here = saved.arrangeSettings(desktop: 1, screen: screen.uuid).sortsByName
             visibleDesktop = 2; editor.desktopPopUp.selectItem(at: 1); editor.pick()
             let otherOff = editor.sortSwitch.state == .off
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.pick()
             let backOn = editor.sortSwitch.state == .on
-            editor.sortSwitch.state = .off; editor.applyAndSave()
+            editor.sortSwitch.state = .off; editor.sortToggled(); editor.applyAndSave()
             let cleared = try layoutStore().load().arrange.isEmpty
             try layoutStore().save(before)
             return reloaded && here && !other && otherOff && backOn && cleared
@@ -465,9 +465,9 @@ func runUISmoke() -> Int32 {
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick(); editor.previewMode.selectItem(at: 0)
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: named), Listing()) }
             let button = NSButton(title: "Grid", target: nil, action: nil); button.tag = 0
-            editor.sortSwitch.state = .off; editor.stagePreset(button)
+            editor.sortSwitch.state = .off; editor.sortToggled(); editor.stagePreset(button)
             let plain = editor.manualDraft?.map(\.windowID) == [1, 2, 3, 4] && !editor.result.stringValue.contains("sorted by name")
-            editor.sortSwitch.state = .on; editor.stagePreset(button)
+            editor.sortSwitch.state = .on; editor.sortToggled(); editor.stagePreset(button)
             let draft = editor.manualDraft ?? []
             let ordered = draft.map(\.windowID) == [2, 4, 1, 3] && editor.result.stringValue.contains("sorted by name")
             let reading = zip(draft, draft.dropFirst()).allSatisfy { ($0.frame.y, $0.frame.x) < ($1.frame.y, $1.frame.x) }
@@ -485,14 +485,98 @@ func runUISmoke() -> Int32 {
                 }
                 return true
             }
-            editor.sortSwitch.state = .off; editor.stagePreset(button)
+            editor.sortSwitch.state = .off; editor.sortToggled(); editor.stagePreset(button)
             guard try shoot("before-") else { return false }
-            editor.sortSwitch.state = .on; editor.stagePreset(button)
+            editor.sortSwitch.state = .on; editor.sortToggled(); editor.stagePreset(button)
             guard try shoot("") else { return false }
             editor.window.appearance = nil
-            editor.sortSwitch.state = .off; editor.resetDraft()
+            editor.sortSwitch.state = .off; editor.resetDraft(); editor.sortToggled()
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
             return plain && ordered && reading
+        })
+        check("gap persists for this screen and desktop only", {
+            let before = try layoutStore().load()
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
+            editor.gapField.integerValue = 8; editor.gapTyped()
+            guard editor.unsaved == ["gap settings"], editor.draftSettings.gapPoints == 8 else { return false }
+            editor.applyAndSave()
+            let saved = try layoutStore().load()
+            let here = saved.arrangeSettings(desktop: 1, screen: screen.uuid), other = saved.arrangeSettings(desktop: 2, screen: screen.uuid)
+            visibleDesktop = 2; editor.desktopPopUp.selectItem(at: 1); editor.pick()
+            let otherZero = editor.gapField.integerValue == 0
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.pick()
+            let back = editor.gapField.integerValue == 8 && editor.unsaved.isEmpty
+            try layoutStore().save(before); editor.pick()
+            return here.gapPoints == 8 && other.gapPoints == 0 && otherZero && back
+        })
+        check("lower switches follow Keep live", {
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
+            let off = !editor.pushBackSwitch.isEnabled && !editor.resizeSwitch.isEnabled && !editor.liveHint.isHidden
+            editor.gapField.integerValue = 8; editor.gapTyped()
+            let on = editor.keepLiveSwitch.state == .on && editor.pushBackSwitch.isEnabled && editor.resizeSwitch.isEnabled && editor.liveHint.isHidden
+            editor.pick()
+            return off && on
+        })
+        check("untouched fields stay nil", {
+            let before = try layoutStore().load()
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
+            editor.gapField.integerValue = 8; editor.gapTyped(); editor.applyAndSave()
+            let one = try layoutStore().load().arrangeSettings(desktop: 1, screen: screen.uuid)
+            let onlyGap = one.gap == 8 && one.keepLive == nil && one.pushBackOnTop == nil && one.correctResize == nil && one.sortByName == nil
+            editor.gapField.integerValue = 0; editor.gapTyped(); editor.applyAndSave()
+            let cleared = try layoutStore().load().arrange.isEmpty
+            try layoutStore().save(before); editor.pick()
+            return onlyGap && cleared
+        })
+        check("the preview redraws with the gap", {
+            let named = [1, 2, 3, 4].map { WindowInfo(windowID: $0, bundleID: "a.\($0)", title: "", frame: w.frame, screenUUID: screen.uuid, order: $0) }
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick(); editor.previewMode.selectItem(at: 0)
+            editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: named), Listing()) }
+            let button = NSButton(title: "Grid", target: nil, action: nil); button.tag = 0
+            editor.stagePreset(button)
+            let flat = editor.manualDraft ?? []
+            editor.gapField.integerValue = 8; editor.gapTyped()
+            let gapped = editor.manualDraft ?? []
+            let redrawn = flat != gapped && gapped.count == 4 && editor.result.stringValue.contains("gap 8 pt")
+            @MainActor func shoot(_ name: String) throws {
+                for (look, mode) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+                    editor.window.appearance = NSAppearance(named: look)
+                    editor.window.contentView?.layoutSubtreeIfNeeded()
+                    guard let content = editor.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
+                    content.wantsLayer = true
+                    editor.window.effectiveAppearance.performAsCurrentDrawingAppearance { content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+                    content.cacheDisplay(in: content.bounds, to: bitmap)
+                    content.layer?.backgroundColor = nil
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("gap-\(name)-\(mode).png"))
+                }
+            }
+            let wide = editor.window.frame
+            for (label, width) in [("100", 1040.0), ("narrow", 880.0)] {
+                editor.window.setContentSize(NSSize(width: width, height: 800))
+                editor.gapField.integerValue = 0; editor.gapTyped(); editor.resetDraft()
+                try shoot("\(label)-defaults")
+                editor.stagePreset(button); editor.gapField.integerValue = 8; editor.gapTyped()
+                try shoot("\(label)-gap8")
+            }
+            editor.window.setFrame(wide, display: false); editor.window.appearance = nil
+            editor.gapField.integerValue = 64; editor.gapTyped()
+            let maybeSkipped = editor.result.stringValue.contains("gap 64 pt") || editor.result.stringValue.contains("gap skipped: no room")
+            editor.gapField.integerValue = 0; editor.gapTyped(); editor.resetDraft()
+            editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
+            return redrawn && maybeSkipped
+        })
+        check("the result line names what was applied", {
+            let before = try layoutStore().load()
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
+            editor.gapField.integerValue = 8; editor.gapTyped(); editor.sortSwitch.state = .on; editor.sortToggled()
+            editor.applyAndSave()
+            let line = editor.result.stringValue
+            try layoutStore().save(before); editor.pick()
+            return line.hasPrefix("✓ Settings saved") && line.contains("gap 8 pt") && line.contains("sorted by name") && line.contains("keep live on")
+        })
+        check("each settings row fits the narrowest window", {
+            let room = editor.window.minSize.width - 2 * 24
+            return editor.settingRows.count == 2 && editor.settingRows.allSatisfy { $0.fittingSize.width < room }
         })
         check("corrupt state disables Save and remains unchanged", {
             let corrupt = Data("broken".utf8); try corrupt.write(to: layoutStore().file); editor.pick(); editor.save()
