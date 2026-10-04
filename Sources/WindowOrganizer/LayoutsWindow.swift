@@ -1,11 +1,7 @@
 import AppKit
 import WindowOrganizerCore
 
-struct WorkspaceContext: Equatable {
-    var screens: [ScreenInfo]
-    var counts: [String: Int]
-    var desktops: [String: Int]
-    var identities: [DisplaySpaces] = []
+extension WorkspaceContext {
     @MainActor static func live() -> WorkspaceContext {
         let screens = currentScreens()
         let displays = SkyLight.displaySpaces(mainUUID: screens.first?.uuid, screenUUIDs: screens.map(\.uuid))
@@ -63,7 +59,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     var capturedDraft = false
     var contextProvider: () -> WorkspaceContext = { WorkspaceContext.live() }
     var snapshotProvider: () -> (ListReport, Listing) = { snapshot() }
-    var applyProvider: (Plan, Listing, [ScreenInfo]) -> ApplyResult = { RestoreSession.shared.apply($0, listing: $1, screens: $2) }
+    var applyProvider: (Plan, Listing, WorkspaceContext) -> ApplyResult = { RestoreSession.shared.apply($0, listing: $1, context: $2) }
     var contextTimer: Timer?
     var loadedSetup = ""
 
@@ -336,7 +332,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
                 guard let source = actual.first(where: { $0.windowID == target.windowID }), source.frame != target.frame else { return nil }
                 return Move(windowID: source.windowID, from: source.frame, to: target.frame)
             }
-            let applied = applyProvider(Plan(moves: moves, skipped: [], unchanged: draft.count - moves.count), listing, context.screens)
+            let applied = applyProvider(Plan(moves: moves, skipped: [], unchanged: draft.count - moves.count), listing, context)
+            guard applied.cancelled == 0 else { throw WorkspaceActionError(message: "The desktop changed while moving. Your preview is still here; try again.") }
             guard applied.failed == 0 else { throw WorkspaceActionError(message: "Some windows could not be moved. Your preview is still here; try again.") }
             let (_, after, _, afterContext) = try workspaceSnapshot()
             guard afterContext == context, Set(after.windows.filter { $0.screenUUID == selection.screenUUID }.map(\.windowID)) == Set(draft.map(\.windowID)) else { throw WorkspaceActionError(message: "The desktop changed before saving. Return and try again.") }
@@ -457,15 +454,15 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// Read windows between two context observations; never apply a list from a desktop transition.
     func workspaceSnapshot(allowPartial: Bool = false) throws -> (WorkspaceSelection, ListReport, Listing, WorkspaceContext) {
         guard let selection else { throw WorkspaceError.screenDisconnected }
-        let before = contextProvider()
-        guard before.screens == screens else { throw WorkspaceError.screenDisconnected }
-        guard selection.isVisible(desktops: before.desktops) else { throw WorkspaceError.desktopNotVisible }
-        let (report, listing) = snapshotProvider()
-        guard report.trusted else { throw WorkspaceActionError(message: "Enable window access in Accessibility settings first.") }
-        guard allowPartial || listing.warnings.isEmpty else { throw WorkspaceActionError(message: listing.warnings.joined(separator: " ")) }
-        guard report.screens == before.screens, contextProvider() == before else {
-            throw WorkspaceActionError(message: "The desktop or screen changed. Try again after the switch finishes.")
-        }
+        var providers = WorkspaceProviders.live
+        providers.context = contextProvider; providers.snapshot = snapshotProvider
+        let (report, listing, before) = try guardedSnapshot(providers, before: { before in
+            guard before.screens == self.screens else { throw WorkspaceError.screenDisconnected }
+            guard selection.isVisible(desktops: before.desktops) else { throw WorkspaceError.desktopNotVisible }
+        }, after: { report, listing in
+            guard report.trusted else { throw WorkspaceActionError(message: "Enable window access in Accessibility settings first.") }
+            guard allowPartial || listing.warnings.isEmpty else { throw WorkspaceActionError(message: listing.warnings.joined(separator: " ")) }
+        })
         return (selection, report, listing, before)
     }
 
@@ -550,7 +547,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             var draft = try layoutStore().load()
             draft.set(ScreenArrangement(kind: .autoTile), setup: ScreenSetup(screens: context.screens), desktop: selection.desktop, screen: selection.screenUUID)
             guard let plan = try planWorkspace(draft, selection: selection, windows: report.windows, screens: context.screens, desktops: context.desktops) else { return }
-            let applied = applyProvider(plan, listing, context.screens)
+            let applied = applyProvider(plan, listing, context)
             mode.selectItem(at: 2); capturedDraft = true; refresh(); refreshLivePreview()
             result.stringValue = ResultLine.restored(applied, desktop: desktopNumber, at: clock()) + ". Save to keep this screen's automatic grid."
         } catch { result.stringValue = "Not arranged: \(error)" }
@@ -566,7 +563,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             guard let plan = try planWorkspace(saved, selection: selection, windows: report.windows, screens: context.screens, desktops: context.desktops) else {
                 result.stringValue = "No saved arrangement for this screen and desktop."; return
             }
-            result.stringValue = ResultLine.restored(applyProvider(plan, listing, context.screens), desktop: desktopNumber, at: clock())
+            result.stringValue = ResultLine.restored(applyProvider(plan, listing, context), desktop: desktopNumber, at: clock())
             refreshLivePreview()
         } catch { result.stringValue = "Not restored: \(error)" }
     }

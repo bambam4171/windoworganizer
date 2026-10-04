@@ -341,6 +341,78 @@ func runUISmoke() -> Int32 {
             editor.captureCurrent()
             return !editor.capturedDraft && editor.result.stringValue.contains("changed")
         })
+        // The global paths (menu, trigger, new window) run on injected providers only: no real window is ever moved.
+        let backup = try Data(contentsOf: layoutStore().file)
+        var guardLayouts = Layouts(); guardLayouts.set(remember([w], on: screen), setup: setup, desktop: 1, screen: screen.uuid)
+        try layoutStore().save(guardLayouts)
+        let guardBase = try Data(contentsOf: layoutStore().file)
+        let wMoved = WindowInfo(windowID: 1, bundleID: w.bundleID, title: w.title, frame: Frame(x: 300, y: 200, width: 400, height: 300), screenUUID: screen.uuid, order: 0)
+        let atDesktop1 = WorkspaceContext(screens: [screen], counts: [screen.uuid: 2], desktops: [screen.uuid: 1], identities: [DisplaySpaces(display: "d", current: 1, spaces: [1, 2])])
+        var atDesktop2 = atDesktop1; atDesktop2.desktops = [screen.uuid: 2]
+        let fakeElement = AXUIElementCreateApplication(1)
+        final class CountingMover: WindowMover {
+            var frames: [Int: Frame] = [:]; var sets: [Int] = []
+            var onSet: () -> Void = {}
+            func frame(of id: Int) -> Frame? { frames[id] }
+            func setFrame(_ f: Frame, of id: Int) { sets.append(id); frames[id] = f; onSet() }
+        }
+        /// A provider set whose context reads are numbered; `flipAt` is the first read (1-based) that already shows desktop 2.
+        func fake(_ mover: CountingMover, flipAt: Int?, windows: [WindowInfo] = [wMoved]) -> WorkspaceProviders {
+            var reads = 0
+            var p = WorkspaceProviders.live
+            p.context = { reads += 1; return flipAt.map { reads >= $0 } == true ? atDesktop2 : atDesktop1 }
+            p.snapshot = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: windows), Listing(windows: windows, elements: [1: fakeElement], warnings: [])) }
+            p.mover = { _ in mover }
+            return p
+        }
+        check("switch during enumeration: Remember and Restore do nothing", {
+            let mover = CountingMover()
+            let remembered = rememberNow(fake(mover, flipAt: 2))
+            let restored = restoreNow(automatic: false, fake(mover, flipAt: 2)) ?? ""
+            return try Data(contentsOf: layoutStore().file) == guardBase && mover.sets.isEmpty
+                && remembered.contains("changed") && restored.contains("changed")
+        })
+        check("switch between moves: Restore stops", {
+            var two = guardLayouts
+            let w2 = WindowInfo(windowID: 2, bundleID: "com.apple.Notes", title: "n", frame: Frame(x: 20, y: 40, width: 300, height: 300), screenUUID: screen.uuid, order: 1)
+            two.set(remember([w, w2], on: screen), setup: setup, desktop: 1, screen: screen.uuid); try layoutStore().save(two)
+            let mover = CountingMover(); var reads = 0
+            var p = fake(mover, flipAt: nil, windows: [wMoved, WindowInfo(windowID: 2, bundleID: w2.bundleID, title: "n", frame: Frame(x: 600, y: 500, width: 200, height: 200), screenUUID: screen.uuid, order: 1)])
+            mover.onSet = { reads = 1 }
+            p.context = { reads == 0 ? atDesktop1 : atDesktop2 }
+            let line = restoreNow(automatic: false, p) ?? ""
+            try layoutStore().save(guardLayouts)
+            return mover.sets.count == 1 && line.hasPrefix("Stopped")
+        })
+        check("switch before saving: Remember writes nothing", {
+            let mover = CountingMover()
+            let line = rememberNow(fake(mover, flipAt: 3))
+            return try Data(contentsOf: layoutStore().file) == guardBase && line.contains("the desktop changed")
+        })
+        check("Remember on the right desktop still saves (control)", {
+            try layoutStore().save(Layouts())
+            let line = rememberNow(fake(CountingMover(), flipAt: nil))
+            let saved = try layoutStore().load()
+            try layoutStore().save(guardLayouts)
+            return line.contains("remembered") && saved.arrangement(setup: setup, desktop: 1, screen: screen.uuid) != nil
+        })
+        check("new-window placement on the wrong desktop does nothing", {
+            let mover = CountingMover()
+            let wrong = placeNewWindow(fakeElement, app: "Terminal", fake(mover, flipAt: 2))
+            let right = CountingMover()
+            let placed = placeNewWindow(fakeElement, app: "Terminal", fake(right, flipAt: nil))
+            return wrong == nil && mover.sets.isEmpty && placed?.contains("placed") == true && right.sets == [1]
+        })
+        check("automatic restore waits while the editor holds a draft", {
+            LayoutsWindow.shown = editor; editor.pick(); editor.ruleEdits["draft.rule"] = AppRule(bundleID: "draft.rule", desktop: 1, screen: screen.uuid, area: AppRule.full)
+            defer { LayoutsWindow.shown = nil; editor.pick() }
+            let mover = CountingMover(), menu = CountingMover()
+            let automatic = restoreNow(automatic: true, fake(mover, flipAt: nil))
+            let viaMenu = restoreNow(automatic: false, fake(menu, flipAt: nil))
+            let newWindow = placeNewWindow(fakeElement, app: "Terminal", fake(mover, flipAt: nil))
+            return automatic == nil && newWindow == nil && mover.sets.isEmpty && menu.sets == [1] && viaMenu != nil
+        })
+        try backup.write(to: layoutStore().file)
         check("corrupt state disables Save and remains unchanged", {
             let corrupt = Data("broken".utf8); try corrupt.write(to: layoutStore().file); editor.pick(); editor.save()
             let after = try Data(contentsOf: layoutStore().file)

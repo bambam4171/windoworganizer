@@ -87,6 +87,22 @@ let restoreChecks: [(String, @Sendable () throws -> Void)] = [
         try expectEqual(mover.sets, [1, 2, 2, 3, 3, 4, 4])
         try expectEqual(mover.frames[3], Frame(x: 100, y: 100, width: 500, height: 400))
     }),
+    ("applyPlan stops when stillValid turns false between moves", {
+        let ws = (1...3).map { window($0, term, "w\($0)", $0 - 1, Frame(x: 0, y: 40, width: 800, height: 600)) }
+        let target = Frame(x: 100, y: 100, width: 300, height: 200)
+        let plan = Plan(moves: ws.map { Move(windowID: $0.windowID, from: $0.frame, to: target) }, skipped: [], unchanged: 0)
+        let mover = FakeMover(ws)
+        let r = applyPlan(plan, mover: mover, stillValid: { mover.sets.isEmpty })
+        try expectEqual(mover.sets, [1])
+        try expectEqual(r.placed, 1)
+        try expectEqual(r.cancelled, 2)
+    }),
+    ("a cancelled restore says so", {
+        let r = ApplyResult(placed: 1, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0, cancelled: 2)
+        let line = ResultLine.restored(r, desktop: 2, at: "10:00")
+        try expect(line.hasPrefix("Stopped: the desktop changed.") && line.contains("2 left"), line)
+        try expectEqual(ResultLine.newWindow(ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0, cancelled: 1), app: "Mail", desktop: 2, at: "10:00")?.hasPrefix("Stopped"), true)
+    }),
     ("result lines", {
         try expectEqual(ResultLine.restored(ApplyResult(placed: 9, keptMinimum: 1, failed: 0, unchanged: 5, notOpen: 1), desktop: 2, at: "23:59"),
                         "Desktop 2: 14 windows placed, 1 kept its minimum size, 1 not open · 23:59")

@@ -43,16 +43,43 @@ func desktopNumbers(screens: [ScreenInfo]) -> [String: Int] {
     return displays.isEmpty ? Dictionary(uniqueKeysWithValues: screens.map { ($0.uuid, 0) }) : numbers
 }
 
+/// Everything an action reads or writes outside the process, in one place so a check can inject all of it.
+@MainActor
+struct WorkspaceProviders {
+    var context: () -> WorkspaceContext = { WorkspaceContext.live() }
+    var snapshot: () -> (ListReport, Listing) = { WindowOrganizer.snapshot() }
+    var mover: (Listing) -> WindowMover = { AXMover(elements: $0.elements) }
+    var store: () -> LayoutStore = { layoutStore() }
+    static var live: WorkspaceProviders { WorkspaceProviders() }
+}
+
+let desktopChangedText = "The desktop or screen changed. Try again after the switch finishes."
+
+/// The one guarded read for every action: the context before, the snapshot, and the context again. A difference means
+/// the user switched desktop or screen meanwhile, and nothing may be planned or saved from this read.
+/// `before` and `after` let the editor add its own checks in between.
+@MainActor
+func guardedSnapshot(_ p: WorkspaceProviders = .live,
+                     before check: (WorkspaceContext) throws -> Void = { _ in },
+                     after verify: (ListReport, Listing) throws -> Void = { _, _ in }) throws -> (ListReport, Listing, WorkspaceContext) {
+    let before = p.context()
+    try check(before)
+    let (report, listing) = p.snapshot()
+    try verify(report, listing)
+    guard report.screens == before.screens, p.context() == before else { throw WorkspaceActionError(message: desktopChangedText) }
+    return (report, listing, before)
+}
+
 /// "Remember this desktop": one snapshot per screen, saved at once. Returns the menu's result line.
 @MainActor
-func rememberNow() -> String {
-    let (report, listing) = snapshot()
-    guard report.trusted else { return StatusLine.text(trusted: false, desktop: nil, windows: 0, screens: 0) }
-    guard listing.warnings.isEmpty else { return "Not remembered: " + listing.warnings.joined(separator: " ") }
-    let desktops = desktopNumbers(screens: report.screens)
-    guard !desktops.isEmpty else { return "Not remembered: this Space is fullscreen or could not be identified." }
-    let store = layoutStore()
+func rememberNow(_ p: WorkspaceProviders = .live) -> String {
     do {
+        let (report, listing, ctx) = try guardedSnapshot(p)
+        guard report.trusted else { return StatusLine.text(trusted: false, desktop: nil, windows: 0, screens: 0) }
+        guard listing.warnings.isEmpty else { return "Not remembered: " + listing.warnings.joined(separator: " ") }
+        guard ctx.isIdentified else { return "Not remembered: this Space is fullscreen or could not be identified." }
+        let desktops = ctx.desktops
+        let store = p.store()
         var layouts = try store.load()
         let kept = zoneScreens(layouts, screens: report.screens, desktops: desktops)
         let auto = report.screens.filter { screen in
@@ -61,6 +88,7 @@ func rememberNow() -> String {
         }.count
         let n = rememberDesktop(&layouts, windows: report.windows, screens: report.screens, desktops: desktops)
         try FileManager.default.createDirectory(at: store.file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard p.context() == ctx else { return "Not remembered: the desktop changed. Try again after the switch finishes." }
         try store.save(layouts)
         let screens = report.screens.filter { desktops[$0.uuid] != nil }.count - kept - auto
         return ResultLine.remembered(windows: n, screens: screens, keptZones: kept, desktop: report.desktop?.number, at: clock()) + (auto == 0 ? "" : ", \(auto) screen(s) keep automatic tiling")
@@ -70,20 +98,21 @@ func rememberNow() -> String {
 }
 
 /// "Restore": puts this desktop's windows back where they were remembered. Returns the menu's result line.
-/// An automatic arrange (a trigger, not the menu) stays quiet when there is no permission or nothing remembered: nil.
+/// An automatic arrange (a trigger, not the menu) stays quiet when there is no permission or nothing remembered: nil,
+/// and never moves windows under a canvas preview the editor has not applied.
 @MainActor
-func restoreNow(automatic: Bool = false) -> String? {
-    let (report, listing) = snapshot()
-    guard report.trusted else { return automatic ? nil : StatusLine.text(trusted: false, desktop: nil, windows: 0, screens: 0) }
-    let desktop = report.desktop?.number
+func restoreNow(automatic: Bool = false, _ p: WorkspaceProviders = .live) -> String? {
+    if automatic && LayoutsWindow.shown?.dirty == true { return nil }
     do {
+        let (report, listing, ctx) = try guardedSnapshot(p)
+        guard report.trusted else { return automatic ? nil : StatusLine.text(trusted: false, desktop: nil, windows: 0, screens: 0) }
+        let desktop = report.desktop?.number
         guard listing.warnings.isEmpty else { return "Not restored: " + listing.warnings.joined(separator: " ") }
-        if automatic && SkyLight.displaySpaces(mainUUID: report.screens.first?.uuid, screenUUIDs: report.screens.map(\.uuid)).isEmpty { return nil }
-        let layouts = try layoutStore().load()
-        guard let plan = planRestore(layouts, windows: report.windows, screens: report.screens,
-                                     desktops: desktopNumbers(screens: report.screens))
+        if automatic && !ctx.isIdentified { return nil }
+        let layouts = try p.store().load()
+        guard let plan = planRestore(layouts, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
         else { return automatic ? nil : ResultLine.nothingRemembered(desktop: desktop, at: clock()) }
-        return ResultLine.restored(RestoreSession.shared.apply(plan, listing: listing, screens: report.screens), desktop: desktop, at: clock())
+        return ResultLine.restored(RestoreSession.shared.apply(plan, listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx }), desktop: desktop, at: clock())
     } catch {
         return "Not restored: \(error)"
     }
@@ -99,15 +128,15 @@ final class RestoreSession {
     private var setup = ""
     private var desktops: [String: Int] = [:]
     var canUndo: Bool { !entries.isEmpty }
-    func apply(_ plan: Plan, listing: Listing, screens: [ScreenInfo]) -> ApplyResult {
-        let mover = AXMover(elements: listing.elements)
-        let result = applyPlan(plan, mover: mover)
+    func apply(_ plan: Plan, listing: Listing, context: WorkspaceContext, mover: WindowMover? = nil, stillValid: (() -> Bool)? = nil) -> ApplyResult {
+        let mover = mover ?? AXMover(elements: listing.elements)
+        let result = applyPlan(plan, mover: mover, stillValid: stillValid ?? { WorkspaceContext.live() == context })
         let changed = plan.moves.compactMap { move -> (Move, AXUIElement, Frame)? in
             guard let element = listing.elements[move.windowID], let after = axFrame(element), after != move.from else { return nil }
             return (move, element, after)
         }
         if !changed.isEmpty {
-            entries = changed; setup = ScreenSetup(screens: screens).key; desktops = desktopNumbers(screens: screens)
+            entries = changed; setup = ScreenSetup(screens: context.screens).key; desktops = context.desktops
         }
         return result
     }
