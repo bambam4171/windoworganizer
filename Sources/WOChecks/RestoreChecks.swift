@@ -106,7 +106,7 @@ let restoreChecks: [(String, @Sendable () throws -> Void)] = [
     }),
     ("layouts live in Application Support unless WO_STATE_DIR says otherwise", {
         let home = URL(fileURLWithPath: "/Users/x")
-        try expectEqual(stateDirectory(environment: [:], home: home).path, "/Users/x/Library/Application Support/WindowOrganizerGPTReview")
+        try expectEqual(stateDirectory(environment: [:], home: home).path, "/Users/x/Library/Application Support/WindowOrganizer")
         try expectEqual(stateDirectory(environment: ["WO_STATE_DIR": "/tmp/wo"], home: home).path, "/tmp/wo")
     }),
 ]

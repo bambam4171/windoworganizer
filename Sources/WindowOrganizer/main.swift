@@ -183,7 +183,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     @objc func openPermission() { NSWorkspace.shared.open(Permission.settingsURL) }
     @objc func about() {
         let alert = NSAlert(); alert.messageText = "Window Organizer"
-        alert.informativeText = "Review edition 1.3\nRemember and restore window positions for each display setup and desktop. Use zones, app rules or automatic tiling.\n\nOnly visible standard windows are arranged. Windows are never sent to another desktop."
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        alert.informativeText = "Version \(version) (build \(build))\nRemember and restore window positions for each display setup and desktop. Use zones, app rules or automatic tiling.\n\nOnly visible standard windows are arranged. Windows are never sent to another desktop."
         alert.addButton(withTitle: "OK"); alert.runModal()
     }
 }

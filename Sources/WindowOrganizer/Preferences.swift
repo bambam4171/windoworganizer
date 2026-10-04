@@ -49,7 +49,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         let data = NSStackView(views: [NSButton(title: "Export layouts…", target: self, action: #selector(exportLayouts)),
                                        NSButton(title: "Import layouts…", target: self, action: #selector(importLayouts)),
                                        NSButton(title: "Show saved files", target: self, action: #selector(showFiles))])
-        let privacy = NSTextField(wrappingLabelWithString: "Layouts stay on this Mac and may contain window titles. This review edition stores its settings and layouts separately from the original app.")
+        let privacy = NSTextField(wrappingLabelWithString: "Layouts stay on this Mac and may contain window titles. Settings and layouts are saved in ~/Library/Application Support/WindowOrganizer.")
         privacy.textColor = .secondaryLabelColor; privacy.font = .systemFont(ofSize: 11)
         let all = NSStackView(views: [title, intro, permission, permissionButton, NSBox(),
             heading("Automatic arrangement"), toggles[0], toggles[1], toggles[2], login,

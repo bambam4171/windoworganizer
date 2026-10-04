@@ -100,5 +100,17 @@ class IdentityChecks(unittest.TestCase):
         self.assertEqual(make_local_identity.NAME, 'WindowOrganizer Local')
 
 
+class ReviewIdentityChecks(unittest.TestCase):
+    def test_no_swift_source_carries_the_review_identity(self):
+        root = Path(__file__).resolve().parent.parent
+        hits = []
+        for f in sorted((root / 'Sources').rglob('*.swift')):
+            for n, line in enumerate(f.read_text().splitlines(), 1):
+                low = line.lower()
+                if 'gptreview' in low or 'review edition' in low or 'windoworganizer.review' in low:
+                    hits.append('%s:%d' % (f.relative_to(root), n))
+        self.assertEqual(hits, [])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

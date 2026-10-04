@@ -228,5 +228,5 @@ public struct Shortcut: Equatable, Sendable {
 /// Where layouts.json lives (plan §1). WO_STATE_DIR points a live check at a throwaway folder.
 public func stateDirectory(environment: [String: String], home: URL) -> URL {
     if let dir = environment["WO_STATE_DIR"], !dir.isEmpty { return URL(fileURLWithPath: dir) }
-    return home.appendingPathComponent("Library/Application Support/WindowOrganizerGPTReview")
+    return home.appendingPathComponent("Library/Application Support/WindowOrganizer")
 }
