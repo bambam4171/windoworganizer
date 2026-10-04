@@ -169,11 +169,12 @@ let sortChecks: [(String, @Sendable () throws -> Void)] = [
     ("an S2 file reads unchanged", {
         var l = Layouts()
         l.setArrangeSettings(ArrangeSettings(gap: 8, sortByName: true), desktop: 1, screen: "MBP")
-        let data = try JSONEncoder().encode(l)
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys  // dictionary key order differs between runs
+        let data = try encoder.encode(l)
         try expect(!String(decoding: data, as: UTF8.self).contains("manualOrder"), "not written when nil")
         let back = try LayoutStore.decode(data)
         try expect(back.arrangeSettings(desktop: 1, screen: "MBP").sortsByName, "reads as by name")
-        try expectEqual(try JSONEncoder().encode(back), data)
+        try expectEqual(try encoder.encode(back), data)
     }),
     ("invalid order refused", {
         let ok = (0..<64).map { Matcher(bundleID: "com.x\($0)") }
