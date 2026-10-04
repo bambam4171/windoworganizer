@@ -427,32 +427,32 @@ func runUISmoke() -> Int32 {
             editor.ruleEdits[w.bundleID] = AppRule(bundleID: w.bundleID, desktop: 1, screen: screen.uuid, area: AppRule.full)
             editor.save()
             let seeded = try layoutStore().load()
-            editor.sortSwitch.state = .on; editor.sortToggled()
-            guard editor.unsaved == ["gap settings"] else { return false }
+            editor.setOrderAuto(true); editor.sortToggled()
+            guard editor.unsaved == ["window order"] else { return false }
             editor.applyAndSave()
             let after = try layoutStore().load()
             try layoutStore().save(before)
-            editor.sortSwitch.state = .off; editor.pick()
+            editor.setOrderAuto(false); editor.pick()
             return after.rules == seeded.rules && !after.rules.isEmpty
                 && after.arrangement(setup: setup, desktop: 1, screen: screen.uuid) == seeded.arrangement(setup: setup, desktop: 1, screen: screen.uuid)
                 && after.arrangeSettings(desktop: 1, screen: screen.uuid).sortsByName
         })
-        check("Sort by name persists for this screen and desktop only", {
+        check("the order menu persists for this screen and desktop only", {
             let before = try layoutStore().load()
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
-            guard editor.sortSwitch.state == .off, !editor.unsaved.contains("gap settings") else { return false }
-            editor.sortSwitch.state = .on; editor.sortToggled()
-            guard editor.unsaved.contains("gap settings") else { return false }
+            guard !editor.orderIsAuto, editor.unsaved.isEmpty else { return false }
+            editor.setOrderAuto(true); editor.sortToggled()
+            guard editor.unsaved == ["window order"] else { return false }
             editor.applyAndSave()
             let saved = try layoutStore().load()
-            let reloaded = editor.loadedSettings.sortsByName && !editor.unsaved.contains("gap settings")
+            let reloaded = editor.loadedSettings.sortsByName && editor.unsaved.isEmpty
             let other = saved.arrangeSettings(desktop: 2, screen: screen.uuid).sortsByName
             let here = saved.arrangeSettings(desktop: 1, screen: screen.uuid).sortsByName
             visibleDesktop = 2; editor.desktopPopUp.selectItem(at: 1); editor.pick()
-            let otherOff = editor.sortSwitch.state == .off
+            let otherOff = !editor.orderIsAuto
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.pick()
-            let backOn = editor.sortSwitch.state == .on
-            editor.sortSwitch.state = .off; editor.sortToggled(); editor.applyAndSave()
+            let backOn = editor.orderIsAuto
+            editor.setOrderAuto(false); editor.sortToggled(); editor.applyAndSave()
             let cleared = try layoutStore().load().arrange.isEmpty
             try layoutStore().save(before)
             return reloaded && here && !other && otherOff && backOn && cleared
@@ -465,9 +465,9 @@ func runUISmoke() -> Int32 {
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick(); editor.previewMode.selectItem(at: 0)
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: named), Listing()) }
             let button = NSButton(title: "Grid", target: nil, action: nil); button.tag = 0
-            editor.sortSwitch.state = .off; editor.sortToggled(); editor.stagePreset(button)
+            editor.setOrderAuto(false); editor.sortToggled(); editor.stagePreset(button)
             let plain = editor.manualDraft?.map(\.windowID) == [1, 2, 3, 4] && !editor.result.stringValue.contains("sorted by name")
-            editor.sortSwitch.state = .on; editor.sortToggled(); editor.stagePreset(button)
+            editor.setOrderAuto(true); editor.sortToggled(); editor.stagePreset(button)
             let draft = editor.manualDraft ?? []
             let ordered = draft.map(\.windowID) == [2, 4, 1, 3] && editor.result.stringValue.contains("sorted by name")
             let reading = zip(draft, draft.dropFirst()).allSatisfy { ($0.frame.y, $0.frame.x) < ($1.frame.y, $1.frame.x) }
@@ -485,12 +485,12 @@ func runUISmoke() -> Int32 {
                 }
                 return true
             }
-            editor.sortSwitch.state = .off; editor.sortToggled(); editor.stagePreset(button)
+            editor.setOrderAuto(false); editor.sortToggled(); editor.stagePreset(button)
             guard try shoot("before-") else { return false }
-            editor.sortSwitch.state = .on; editor.sortToggled(); editor.stagePreset(button)
+            editor.setOrderAuto(true); editor.sortToggled(); editor.stagePreset(button)
             guard try shoot("") else { return false }
             editor.window.appearance = nil
-            editor.sortSwitch.state = .off; editor.resetDraft(); editor.sortToggled()
+            editor.setOrderAuto(false); editor.resetDraft(); editor.sortToggled()
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
             return plain && ordered && reading
         })
@@ -560,7 +560,8 @@ func runUISmoke() -> Int32 {
             }
             editor.window.setFrame(wide, display: false); editor.window.appearance = nil
             editor.gapField.integerValue = 64; editor.gapTyped()
-            let maybeSkipped = editor.result.stringValue.contains("gap 64 pt") || editor.result.stringValue.contains("gap skipped: no room")
+            let noRoom = applyGap(presetFrames(.grid, count: 4, in: screen.visibleFrame), gap: 64).skipped
+            let maybeSkipped = editor.result.stringValue.contains(noRoom ? "gap skipped: no room" : "gap 64 pt")
             editor.gapField.integerValue = 0; editor.gapTyped(); editor.resetDraft()
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
             return redrawn && maybeSkipped
@@ -568,15 +569,112 @@ func runUISmoke() -> Int32 {
         check("the result line names what was applied", {
             let before = try layoutStore().load()
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
-            editor.gapField.integerValue = 8; editor.gapTyped(); editor.sortSwitch.state = .on; editor.sortToggled()
+            editor.gapField.integerValue = 8; editor.gapTyped(); editor.setOrderAuto(true); editor.sortToggled()
             editor.applyAndSave()
             let line = editor.result.stringValue
             try layoutStore().save(before); editor.pick()
             return line.hasPrefix("✓ Settings saved") && line.contains("gap 8 pt") && line.contains("sorted by name") && line.contains("keep live on")
         })
-        check("each settings row fits the narrowest window", {
-            let room = editor.window.minSize.width - 2 * 24
-            return editor.settingRows.count == 2 && editor.settingRows.allSatisfy { $0.fittingSize.width < room }
+        check("the gap line fits at 880", {
+            let room = 880.0 - 2 * 28
+            return editor.window.minSize.width <= 880 && editor.settingRows.count == 2 && editor.settingRows.allSatisfy { $0.fittingSize.width < room }
+        })
+        let tileNames: [(String, Int)] = [("Safari", 1), ("Mail", 2), ("Terminal", 3), ("Notes", 4)]
+        let tileWindows = tileNames.map { name, id in
+            WindowInfo(windowID: id, bundleID: "com.apple.\(name)", title: "", frame: w.frame, screenUUID: screen.uuid, order: id, appName: name)
+        }
+        @MainActor func stageTiles() -> NSButton {
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick(); editor.previewMode.selectItem(at: 0)
+            editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: tileWindows), Listing()) }
+            let button = NSButton(title: "Grid", target: nil, action: nil); button.tag = 0
+            editor.stagePreset(button); return button
+        }
+        @MainActor func centre(_ id: Int) -> CGPoint {
+            let f = editor.presetTiles.first { $0.id == id }!.frame
+            return CGPoint(x: f.x + f.width / 2, y: f.y + f.height / 2)
+        }
+        @MainActor func restore() {
+            editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
+        }
+        check("a drop on a tile swaps in manual mode", {
+            let before = try layoutStore().load()
+            let button = stageTiles()
+            guard !editor.orderIsAuto, editor.manualDraft?.map(\.windowID) == [1, 2, 3, 4] else { return false }
+            let tile4 = centre(4), tile1 = centre(1)
+            editor.dropped(1, at: tile4)
+            guard editor.manualDraft?.map(\.windowID) == [4, 2, 3, 1], editor.unsaved.contains("window order"),
+                  editor.result.stringValue.contains("your order") else { return false }
+            editor.setOrderAuto(true); editor.sortToggled(); editor.setOrderAuto(false); editor.sortToggled()
+            guard editor.manualDraft?.map(\.windowID) == [4, 2, 3, 1] else { return false }
+            let shot = editor.draftSettings.manualOrder?.map(\.bundleID)
+            editor.applyAndSave()
+            let stored = try layoutStore().load().arrangeSettings(desktop: 1, screen: screen.uuid).manualOrder?.map(\.bundleID)
+            editor.resetDraft(); editor.pick()
+            _ = stageTiles()
+            let reopened = editor.manualDraft?.map(\.windowID) == [4, 2, 3, 1]
+            // A drop outside every tile is a free move: the order stays.
+            editor.dropped(4, at: CGPoint(x: -50, y: -50))
+            let free = editor.manualDraft?.map(\.windowID) == [4, 2, 3, 1]
+            _ = tile1; _ = button
+            try layoutStore().save(before); editor.resetDraft(); editor.pick(); restore()
+            return shot == stored && stored?.first == "com.apple.Notes" && reopened && free
+        })
+        check("order shots", {
+            let before = try layoutStore().load()
+            @MainActor func shoot(_ name: String) throws {
+                for (look, mode) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+                    editor.window.appearance = NSAppearance(named: look)
+                    editor.window.contentView?.layoutSubtreeIfNeeded()
+                    guard let content = editor.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
+                    content.wantsLayer = true
+                    editor.window.effectiveAppearance.performAsCurrentDrawingAppearance { content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+                    content.cacheDisplay(in: content.bounds, to: bitmap)
+                    content.layer?.backgroundColor = nil
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("order-\(name)-\(mode).png"))
+                }
+            }
+            let wide = editor.window.frame
+            for (label, width) in [("100", 1040.0), ("880", 880.0)] {
+                editor.window.setContentSize(NSSize(width: width, height: 800))
+                _ = stageTiles()
+                try shoot("\(label)-manual-before")
+                editor.dropped(1, at: centre(4))
+                try shoot("\(label)-manual-after")
+                editor.setOrderAuto(true); editor.sortToggled()
+                try shoot("\(label)-byname")
+                editor.dropped(2, at: centre(3))
+                try shoot("\(label)-byname-drop")
+                editor.setOrderAuto(false); editor.resetDraft(); editor.pick()
+            }
+            editor.window.setFrame(wide, display: false); editor.window.appearance = nil
+            try layoutStore().save(before); editor.pick(); restore()
+            return true
+        })
+        check("no swap in by-name mode", {
+            let before = try layoutStore().load()
+            _ = stageTiles()
+            editor.setOrderAuto(true); editor.sortToggled()
+            let order = editor.manualDraft?.map(\.windowID)
+            editor.dropped(1, at: centre(4))
+            let same = editor.manualDraft?.map(\.windowID) == order && editor.draftSettings.manualOrder == nil
+            let line = editor.result.stringValue.contains("Order is by app name. Choose “I arrange the order myself” to swap tiles.")
+            editor.setOrderAuto(false); editor.resetDraft(); editor.sortToggled(); restore()
+            try layoutStore().save(before); editor.pick()
+            return same && line
+        })
+        check("a gap change after a swap keeps it", {
+            let before = try layoutStore().load()
+            _ = stageTiles()
+            // As a real drag does: the dragged window moves first (stageWindow puts it at index 0), then it is dropped.
+            let tile3 = editor.presetTiles.first { $0.id == 3 }!.frame
+            editor.stageWindow(2, frame: tile3)
+            editor.dropped(2, at: centre(3))
+            let swapped = editor.manualDraft?.map(\.windowID) == [1, 3, 2, 4]
+            editor.gapField.integerValue = 8; editor.gapTyped()
+            let kept = editor.manualDraft?.map(\.windowID) == [1, 3, 2, 4] && editor.result.stringValue.contains("gap 8 pt")
+            editor.gapField.integerValue = 0; editor.gapTyped(); editor.resetDraft(); restore()
+            try layoutStore().save(before); editor.pick()
+            return swapped && kept
         })
         check("corrupt state disables Save and remains unchanged", {
             let corrupt = Data("broken".utf8); try corrupt.write(to: layoutStore().file); editor.pick(); editor.save()

@@ -17,6 +17,8 @@ final class ScreenPreview: NSView {
     var editable = false
     var selectedID: Int?
     var changed: ((Int, Frame) -> Void)?
+    /// A move (not a resize) ended with the pointer at this point, in screen coordinates.
+    var dropped: ((Int, CGPoint) -> Void)?
     private var drag: (id: Int, start: CGPoint, frame: Frame, resize: Bool)?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { editable }
@@ -58,7 +60,14 @@ final class ScreenPreview: NSView {
         let frame = transformed(drag.frame, delta: CGPoint(x: point.x - drag.start.x, y: point.y - drag.start.y), resize: drag.resize)
         windows[i].frame = frame; changed?(drag.id, frame); needsDisplay = true
     }
-    override func mouseUp(with event: NSEvent) { drag = nil }
+    override func mouseUp(with event: NSEvent) {
+        defer { drag = nil }
+        guard let drag, !drag.resize, let screen else { return }
+        let point = convert(event.locationInWindow, from: nil), display = displayRect()
+        let scale = display.width / screen.frame.width
+        guard scale > 0 else { return }
+        dropped?(drag.id, CGPoint(x: screen.frame.x + (point.x - display.minX) / scale, y: screen.frame.y + (point.y - display.minY) / scale))
+    }
     override func keyDown(with event: NSEvent) {
         guard editable, let id = selectedID, let item = windows.first(where: { $0.windowID == id }) else { super.keyDown(with: event); return }
         let step: CGFloat = event.modifierFlags.contains(.shift) ? 20 : 4

@@ -35,7 +35,12 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     let resetDraftButton = NSButton(title: "Reset", target: nil, action: nil)
     /// WINDOW-GAP S2: the settings of the picked screen and desktop. `loadedSettings` is what the file holds, `draftSettings`
     /// what the controls say; an untouched field stays nil so it keeps following the default. Pending until Apply & Save.
-    let sortSwitch = NSButton(checkboxWithTitle: "Sort by app name", target: nil, action: nil)
+    /// SORT-MODE: "Sort automatically by name" (item 0) or "I arrange the order myself" (item 1, the default).
+    let orderPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    var orderIsAuto: Bool { orderPopUp.indexOfSelectedItem == 0 }
+    func setOrderAuto(_ auto: Bool) { orderPopUp.selectItem(at: auto ? 0 : 1) }
+    /// The staged preset's tiles, in the order the windows fill them: what a drop is tested against.
+    var presetTiles: [(id: Int, frame: Frame)] = []
     let gapField = NSTextField(string: "0")
     let gapStepper = NSStepper()
     let keepLiveSwitch = NSButton(checkboxWithTitle: "Keep live", target: nil, action: nil)
@@ -242,8 +247,9 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         resetDraftButton.target = self; resetDraftButton.action = #selector(resetDraft)
         let arrangeHeader = row([label("2  Arrange your windows"), NSView(), previewMode, refreshPreviewButton])
         visibleButton.title = "Use current desktop"
-        sortSwitch.target = self; sortSwitch.action = #selector(sortToggled)
-        sortSwitch.toolTip = "Windows fill the tiles in app-name order. Applies to Grid, Columns, Rows and automatic tiling on this screen and desktop."
+        orderPopUp.addItems(withTitles: ["Sort automatically by name", "I arrange the order myself"])
+        orderPopUp.target = self; orderPopUp.action = #selector(sortToggled)
+        orderPopUp.toolTip = "Grid, Columns, Rows and automatic tiling on this screen and desktop. Saved windows, zones and app rules keep their place."
         gapStepper.minValue = 0; gapStepper.maxValue = Double(ArrangeSettings.maxGap); gapStepper.increment = 1; gapStepper.valueWraps = false
         gapStepper.target = self; gapStepper.action = #selector(gapStepped)
         gapField.target = self; gapField.action = #selector(gapTyped); gapField.alignment = .right
@@ -254,10 +260,11 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         for control in [gapField, gapStepper, keepLiveSwitch, pushBackSwitch, resizeSwitch] { control.toolTip = scope }
         gapField.toolTip = "Points between neighbouring windows (0 to \(ArrangeSettings.maxGap)). " + scope
         let toolbar = row(presets + [resetDraftButton, NSView(), visibleButton, permissionButton])
-        let gapLine = row([label("Gap", size: 13, weight: .regular), gapField, gapStepper, label("pt", size: 13, weight: .regular), sortSwitch])
+        let gapLine = row([label("Gap", size: 13, weight: .regular), gapField, gapStepper, label("pt", size: 13, weight: .regular), NSView(), label("Order", size: 13, weight: .regular), orderPopUp])
         let liveLine = row([keepLiveSwitch, pushBackSwitch, resizeSwitch, liveHint])
         settingRows = [gapLine, liveLine]
         preview.changed = { [weak self] id, frame in self?.stageWindow(id, frame: frame) }
+        preview.dropped = { [weak self] id, point in self?.dropped(id, at: point) }
         preview.toolTip = "Drag a window card to move it. Drag its bottom-right corner to resize. Changes apply when you choose Apply & Save."
         primaryButton.target = self; primaryButton.action = #selector(applyAndSave)
         primaryButton.bezelStyle = .rounded; primaryButton.bezelColor = .controlAccentColor
@@ -323,12 +330,14 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             let (frames, noRoom) = applyGap(presetFrames([.grid, .columns, .rows][min(max(button.tag, 0), 2)], count: current.count, in: screen.visibleFrame),
                                             gap: draftSettings.gapPoints)
             lastPreset = button
+            presetTiles = zip(current, frames).map { ($0.windowID, $1) }
             var draft = current
             for i in draft.indices { draft[i].frame = frames[i] }
             liveWindows = current; previewContext = context; previewMessage = listing.warnings.joined(separator: " ")
             manualDraft = draft; draftContext = context; refreshWorkspaceStatus()
             let gapNote = draftSettings.gapPoints == 0 ? "" : noRoom ? " · gap skipped: no room" : " · gap \(draftSettings.gapPoints) pt"
-            result.stringValue = "\(button.title) preview · \(draft.count) windows\(sorted ? " · sorted by name" : "")\(gapNote) · Adjust, then Apply & Save."
+            previewCaption.stringValue = "\(draft.count) windows in preview · Drag to move. Pull a bottom-right corner to resize." + (sorted ? "" : " Drag a window onto another tile to swap them.")
+            result.stringValue = "\(button.title) preview · \(draft.count) windows\(sorted ? " · sorted by name" : " · your order")\(gapNote) · Adjust, then Apply & Save."
         } catch { result.stringValue = "Preview unavailable: \(error)" }
     }
     /// Every settings control ends here: the controls become `draftSettings`, a staged preset redraws at once.
@@ -336,7 +345,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let gap = min(max(Int(gapField.stringValue.trimmingCharacters(in: .whitespaces)) ?? loadedSettings.gapPoints, 0), ArrangeSettings.maxGap)
         var next = draftSettings
         next.gap = gap == 0 ? nil : gap
-        next.sortByName = sortSwitch.state == .on ? true : nil
+        next.sortByName = orderIsAuto ? true : nil
         let live = keepLiveSwitch.state == .on
         // Only a touched Keep live is stored; one that agrees with the default for this gap stays nil.
         if live != draftSettings.isLive || draftSettings.keepLive != nil { next.keepLive = live == (gap > 0) ? nil : live }
@@ -346,13 +355,29 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         showControls()
         if manualDraft != nil, let lastPreset { stagePreset(lastPreset) } else { refreshWorkspaceStatus() }
     }
+    /// A drop that ends inside another window's tile swaps the two tiles, in "I arrange the order myself" mode only.
+    /// `point` is in screen coordinates. Tiles are the staged preset's frames, never the windows' frames or the draft order.
+    func dropped(_ id: Int, at point: CGPoint) {
+        guard lastPreset != nil, manualDraft != nil, let from = presetTiles.firstIndex(where: { $0.id == id }),
+              let to = presetTiles.firstIndex(where: { $0.id != id && Self.contains($0.frame, point) }) else { return }
+        guard !draftSettings.sortsByName else {
+            result.stringValue = "Order is by app name. Choose “I arrange the order myself” to swap tiles."; return
+        }
+        var ids = presetTiles.map(\.id)
+        ids.swapAt(from, to)
+        let byID = Dictionary(liveWindows.map { ($0.windowID, $0) }, uniquingKeysWith: { a, _ in a })
+        draftSettings.manualOrder = manualOrder(for: ids.compactMap { byID[$0] })
+        if let lastPreset { stagePreset(lastPreset) }
+        result.stringValue = "Swapped two tiles · " + result.stringValue
+    }
+    static func contains(_ f: Frame, _ p: CGPoint) -> Bool { p.x >= f.x && p.x < f.x + f.width && p.y >= f.y && p.y < f.y + f.height }
     @objc func gapStepped() { gapField.integerValue = gapStepper.integerValue; sortToggled() }
     @objc func gapTyped() { sortToggled() }
     /// The controls show `draftSettings`; the two lower switches only work with Keep live.
     func showControls() {
         let d = draftSettings
         gapField.integerValue = d.gapPoints; gapStepper.integerValue = d.gapPoints
-        sortSwitch.state = d.sortsByName ? .on : .off
+        setOrderAuto(d.sortsByName)
         keepLiveSwitch.state = d.isLive ? .on : .off
         pushBackSwitch.state = d.pushesBackOnTop ? .on : .off
         resizeSwitch.state = d.correctsResize ? .on : .off
@@ -361,7 +386,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// " · gap 8 pt · sorted by name · keep live on" for the result line.
     var settingsSummary: String {
         let d = loadedSettings
-        return (d.gapPoints > 0 ? " · gap \(d.gapPoints) pt" : "") + (d.sortsByName ? " · sorted by name" : "") + (d.isLive ? " · keep live on" : "")
+        return (d.gapPoints > 0 ? " · gap \(d.gapPoints) pt" : "") + (d.sortsByName ? " · sorted by name" : d.manualOrder != nil ? " · your order" : "") + (d.isLive ? " · keep live on" : "")
     }
     @objc func refreshCurrentWindows() {
         do {
@@ -377,8 +402,9 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
     @objc func resetDraft() { manualDraft = nil; draftContext = nil; lastPreset = nil; result.stringValue = ""; refreshLivePreview(); refreshWorkspaceStatus() }
     @objc func applyAndSave() {
+        window.makeFirstResponder(nil)   // a gap still being typed commits before Apply & Save reads it (Zeus, S2 note 1)
         // A settings-only change writes the settings alone: capturing the live windows would overwrite the layout and clear the rules (Z-380).
-        if manualDraft == nil, unsaved == ["gap settings"] {
+        if manualDraft == nil, !unsaved.isEmpty, unsaved.allSatisfy({ $0 == "gap settings" || $0 == "window order" }) {
             save()
             if unsaved.isEmpty, let screen { result.stringValue = "✓ Settings saved · \(screen.name), \(desktopName)" + settingsSummary }
             refreshWorkspaceStatus(); return
@@ -454,7 +480,10 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         if manualDraft != nil { u.append("canvas preview") }
         if advancedPending { u.append("Advanced arrangement") }
         if !ruleEdits.isEmpty { u.append("app rules") }
-        if draftSettings != loadedSettings { u.append("gap settings") }
+        let a = draftSettings, b = loadedSettings
+        if a.sortByName != b.sortByName || a.manualOrder != b.manualOrder { u.append("window order") }
+        var rest = a; rest.sortByName = b.sortByName; rest.manualOrder = b.manualOrder
+        if rest != b { u.append("gap settings") }
         return u
     }
     var dirty: Bool { !unsaved.isEmpty }
