@@ -188,7 +188,7 @@ public func applyPlan(_ plan: Plan, mover: WindowMover, stillValid: () -> Bool =
 
 /// The menu's last-result line (plan §4): what happened, on which desktop, when.
 public enum ResultLine {
-    public static func restored(_ r: ApplyResult, desktop: Int?, at time: String) -> String {
+    public static func restored(_ r: ApplyResult, starting: [String] = [], desktop: Int?, at time: String) -> String {
         if r.cancelled > 0 { return "Stopped: the desktop changed. Placed \(r.placed + r.keptMinimum), \(r.cancelled) left as they were · \(time)" }
         let inPlace = r.placed + r.unchanged
         var parts: [String] = []
@@ -201,7 +201,14 @@ public enum ResultLine {
             if r.failed > 0 { parts.append("\(r.failed) could not be moved") }
             if r.notOpen > 0 { parts.append("\(r.notOpen) not open") }
         }
+        _ = starting
         return "\(name(desktop)): \(parts.joined(separator: ", ")) · \(time)"
+    }
+
+    /// The final line of a start-missing-apps batch (WO-LAUNCH-MISSING).
+    public static func started(names: [String], placed: Int, late: [String] = [], failed: [String] = [], stopped: Bool = false,
+                               desktop: Int?, at time: String) -> String {
+        ""
     }
 
     /// After a new window was placed; nil when it had no place to go (then the menu keeps its line).
