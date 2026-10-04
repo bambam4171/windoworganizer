@@ -817,9 +817,19 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             pattern.placeholderString = "Any title"; pattern.toolTip = "Optional title filter; * matches any text"
             pattern.identifier = NSUserInterfaceItemIdentifier(id); pattern.target = self; pattern.action = #selector(zonePattern(_:))
             pattern.isEnabled = box.state == .on; pattern.widthAnchor.constraint(equalToConstant: 110).isActive = true
-            let row = NSStackView(views: [box, pattern]); row.orientation = .vertical; row.alignment = .leading; row.spacing = 4
+            var views: [NSView] = [box, pattern]
+            if box.state == .on, !launchProviders.running().contains(id) {
+                let note = NSTextField(labelWithString: memberHint(startsOnRestore: Preferences.startsMissing(.restore)))
+                note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor; note.identifier = NSUserInterfaceItemIdentifier("memberHint")
+                views.append(note)
+            }
+            let row = NSStackView(views: views); row.orientation = .vertical; row.alignment = .leading; row.spacing = 4
             members.addArrangedSubview(row)
         }
+    }
+
+    func memberHint(startsOnRestore: Bool) -> String {
+        startsOnRestore ? "not running, started when you restore" : "not running, not started (Settings › Start missing apps)"
     }
 
     /// The rules as they will be saved, for the picked desktop and screen.
