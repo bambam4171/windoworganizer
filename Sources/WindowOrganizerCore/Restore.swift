@@ -84,8 +84,9 @@ public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [Scr
         group(mine, in: zone.rect.frame(in: screen.visibleFrame), on: screen)
     }
     for screen in automatic {
-        let mine = free.filter { $0.screenUUID == screen.uuid && !claimed.contains($0.windowID) }
-            .sorted { ($0.bundleID, $0.order, $0.windowID) < ($1.bundleID, $1.order, $1.windowID) }
+        let settings = desktops[screen.uuid].map { layouts.arrangeSettings(desktop: $0, screen: screen.uuid) } ?? ArrangeSettings()
+        let mine = arrangeOrder(free.filter { $0.screenUUID == screen.uuid && !claimed.contains($0.windowID) }
+            .sorted { ($0.bundleID, $0.order, $0.windowID) < ($1.bundleID, $1.order, $1.windowID) }, settings: settings)
         claimed.formUnion(mine.map(\.windowID))
         plan.tiles.append(mine.map(\.windowID))
         for (w, target) in zip(mine, gridTile(mine.count, in: screen.visibleFrame)) { wanted.append((screen.uuid, w, target)) }

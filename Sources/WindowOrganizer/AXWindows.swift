@@ -99,7 +99,7 @@ func listWindows(screens: [ScreenInfo], screenUUID selected: String? = nil, time
             let (id, w, frame) = entry
             guard let screen = screenUUID(for: frame, in: screens) else { continue }
             out.windows.append(WindowInfo(windowID: id, bundleID: bundleID, title: axAttr(w, kAXTitleAttribute) ?? "",
-                                          frame: frame, screenUUID: screen, order: order))
+                                          frame: frame, screenUUID: screen, order: order, appName: app.localizedName))
             out.elements[id] = w
         }
     }

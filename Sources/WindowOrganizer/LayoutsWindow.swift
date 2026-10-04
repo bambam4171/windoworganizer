@@ -33,6 +33,9 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     let workflowStatus = NSTextField(labelWithString: "")
     let primaryButton = NSButton(title: "Save layout", target: nil, action: nil)
     let resetDraftButton = NSButton(title: "Reset", target: nil, action: nil)
+    /// SORT-BY-NAME: pending until Apply & Save; `loadedSort` is what the file holds for the picked screen and desktop.
+    let sortSwitch = NSButton(checkboxWithTitle: "Sort by app name", target: nil, action: nil)
+    var loadedSort = false
     let advancedWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
     var manualDraft: [WindowInfo]?
     var draftContext: WorkspaceContext?
@@ -229,7 +232,9 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         resetDraftButton.target = self; resetDraftButton.action = #selector(resetDraft)
         let arrangeHeader = row([label("2  Arrange your windows"), NSView(), previewMode, refreshPreviewButton])
         visibleButton.title = "Use current desktop"
-        let toolbar = row(presets + [resetDraftButton, NSView(), visibleButton, permissionButton])
+        sortSwitch.target = self; sortSwitch.action = #selector(sortToggled)
+        sortSwitch.toolTip = "Windows fill the tiles in app-name order. Applies to Grid, Columns, Rows and automatic tiling on this screen and desktop."
+        let toolbar = row(presets + [resetDraftButton, sortSwitch, NSView(), visibleButton, permissionButton])
         preview.changed = { [weak self] id, frame in self?.stageWindow(id, frame: frame) }
         preview.toolTip = "Drag a window card to move it. Drag its bottom-right corner to resize. Changes apply when you choose Apply & Save."
         primaryButton.target = self; primaryButton.action = #selector(applyAndSave)
@@ -289,22 +294,19 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             // A preset replaces the whole preview, so enumerate now rather than reusing an older draft.
             let (selection, report, listing, context) = try workspaceSnapshot(allowPartial: true)
             guard let screen else { throw WorkspaceError.screenDisconnected }
-            let current = report.windows.filter { $0.screenUUID == selection.screenUUID }
-            guard !current.isEmpty else { throw WorkspaceError.noWindows }
-            let area = screen.visibleFrame, count = Double(current.count)
-            let frames: [Frame]
-            switch button.tag {
-            case 1: frames = current.indices.map { Frame(x: area.x + Double($0) * area.width / count, y: area.y, width: area.width / count, height: area.height) }
-            case 2: frames = current.indices.map { Frame(x: area.x, y: area.y + Double($0) * area.height / count, width: area.width, height: area.height / count) }
-            default: frames = gridTile(current.count, in: area)
-            }
+            let found = report.windows.filter { $0.screenUUID == selection.screenUUID }
+            guard !found.isEmpty else { throw WorkspaceError.noWindows }
+            let sorted = sortSwitch.state == .on
+            let current = arrangeOrder(found, settings: ArrangeSettings(sortByName: sorted ? true : nil))
+            let frames = presetFrames([.grid, .columns, .rows][min(max(button.tag, 0), 2)], count: current.count, in: screen.visibleFrame)
             var draft = current
             for i in draft.indices { draft[i].frame = frames[i] }
             liveWindows = current; previewContext = context; previewMessage = listing.warnings.joined(separator: " ")
             manualDraft = draft; draftContext = context; refreshWorkspaceStatus()
-            result.stringValue = "\(button.title) preview · \(draft.count) windows · Adjust, then Apply & Save."
+            result.stringValue = "\(button.title) preview · \(draft.count) windows\(sorted ? " · sorted by name" : "") · Adjust, then Apply & Save."
         } catch { result.stringValue = "Preview unavailable: \(error)" }
     }
+    @objc func sortToggled() { refreshWorkspaceStatus() }
     @objc func refreshCurrentWindows() {
         do {
             let (selection, report, listing, context) = try workspaceSnapshot(allowPartial: true)
@@ -319,6 +321,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
     @objc func resetDraft() { manualDraft = nil; draftContext = nil; result.stringValue = ""; refreshLivePreview(); refreshWorkspaceStatus() }
     @objc func applyAndSave() {
+        // A sort-only change writes the setting alone: capturing the live windows would overwrite the layout and clear the rules (Z-380).
+        if manualDraft == nil, unsaved == ["sort setting"] { save(); refreshWorkspaceStatus(); return }
         guard let draft = manualDraft else { saveCurrentArrangement(); previewMode.selectItem(at: 0); updatePreview(); refreshWorkspaceStatus(); return }
         guard !advancedPending else {
             result.stringValue = "Not applied: Advanced has unsaved changes for this desktop. Save or discard them first."; return
@@ -390,6 +394,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         if manualDraft != nil { u.append("canvas preview") }
         if advancedPending { u.append("Advanced arrangement") }
         if !ruleEdits.isEmpty { u.append("app rules") }
+        if (sortSwitch.state == .on) != loadedSort { u.append("sort setting") }
         return u
     }
     var dirty: Bool { !unsaved.isEmpty }
@@ -615,6 +620,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         case nil: loadedMode = 0
         }
         loadedPlacements = placements; mode.selectItem(at: loadedMode)
+        loadedSort = layouts.arrangeSettings(desktop: desktopNumber, screen: screen.uuid).sortsByName
+        sortSwitch.state = loadedSort ? .on : .off
         selectedScreen = screenPopUp.indexOfSelectedItem; selectedDesktop = desktopPopUp.indexOfSelectedItem
         liveWindows = []; previewContext = nil
         refreshSnapshotRows()
@@ -630,12 +637,19 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let store = layoutStore()
         var fresh = try store.load()
         edit(&fresh)
+        let sorted = sortSwitch.state == .on
+        if sorted != loadedSort {
+            var settings = fresh.arrangeSettings(desktop: desktop, screen: screenUUID)
+            settings.sortByName = sorted ? true : nil
+            fresh.setArrangeSettings(settings, desktop: desktop, screen: screenUUID)
+        }
         for (app, rule) in ruleEdits { if let rule { fresh.setRule(rule) } else { fresh.removeRule(app) } }
         for rule in fresh.rules where rule.screen == screenUUID && rule.desktop == desktop && apps.contains(rule.bundleID) { fresh.removeRule(rule.bundleID) }
         try FileManager.default.createDirectory(at: store.file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try store.save(fresh)
         layouts = fresh
         ruleEdits = [:]
+        loadedSort = sorted
     }
 
     @objc func save() {
