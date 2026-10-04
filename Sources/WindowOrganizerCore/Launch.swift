@@ -12,12 +12,12 @@ public enum LaunchTrigger: String, CaseIterable, Sendable {
     case screenPlug
     /// `.start`: every app start, not only a login.
     case login
-    // STUB (red run): all off, gainedScreen never true
-    public var defaultOn: Bool { false }
+    /// Restore, Apply & Save and a plugged display start missing apps; opening the app does not.
+    public var defaultOn: Bool { self != .login }
 }
 
 /// True only when a screen UUID appears that the previous settle did not have.
-public func gainedScreen(previous: Set<String>, current: Set<String>) -> Bool { false }
+public func gainedScreen(previous: Set<String>, current: Set<String>) -> Bool { !current.subtracting(previous).isEmpty }
 
 /// The bundle IDs of the apps a layout needs that are not running, for the screens in scope.
 public func appsToStart(_ layouts: Layouts, screens: [ScreenInfo], desktops: [String: Int], scope: WorkspaceSelection? = nil,
