@@ -821,6 +821,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             if box.state == .on, !launchProviders.running().contains(id) {
                 let note = NSTextField(labelWithString: memberHint(startsOnRestore: Preferences.startsMissing(.restore)))
                 note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor; note.identifier = NSUserInterfaceItemIdentifier("memberHint")
+                note.lineBreakMode = .byWordWrapping; note.maximumNumberOfLines = 0; note.preferredMaxLayoutWidth = 230
                 views.append(note)
             }
             let row = NSStackView(views: views); row.orientation = .vertical; row.alignment = .leading; row.spacing = 4

@@ -548,6 +548,46 @@ func runUISmoke() -> Int32 {
             Preferences.defaults.removeObject(forKey: "startMissing.applySave"); editor.launchProviders = launching(CountingMover(), Calls(), outcome: nil)
             return zones == [notes] && capture.isEmpty && off.isEmpty
         })
+        func shot(_ window: NSWindow, _ name: String) throws {
+            guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw CocoaError(.fileWriteUnknown) }
+            // Offscreen, the window background is not painted: give the content view the appearance's own background.
+            view.wantsLayer = true
+            window.effectiveAppearance.performAsCurrentDrawingAppearance { view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            view.layer?.backgroundColor = nil
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+        }
+        check("shots: Settings with a greyed switch (light, dark) and the editor member hint in both states", {
+            defer { Preferences.defaults.removeObject(forKey: "restoreOnScreens"); Preferences.defaults.removeObject(forKey: "startMissing.restore"); try? layoutStore().save(guardLayouts) }
+            Preferences.defaults.set(false, forKey: "restoreOnScreens")
+            let settings = SettingsWindow(); settings.refresh()
+            for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                settings.window.appearance = NSAppearance(named: appearance); settings.window.contentView?.layoutSubtreeIfNeeded()
+                try shot(settings.window, "settings-start-missing-\(mode)")
+            }
+            let screenPlug = settings.startToggles.first { $0.identifier?.rawValue == "startMissing.screenPlug" }!
+            let greyed = !screenPlug.isEnabled
+            // A name that sorts first, so the member row with its hint is inside the shot.
+            let zone = Zone(rect: UnitRect(x: 0, y: 0, width: 1, height: 1), members: [ZoneMember(bundleID: "a.first.app")])
+            var zoned = Layouts(); zoned.set(ScreenArrangement(kind: .zones([zone])), setup: setup, desktop: 1, screen: screen.uuid)
+            try layoutStore().save(zoned)
+            var hints: [String] = []
+            for on in [true, false] {
+                Preferences.defaults.set(on, forKey: "startMissing.restore")
+                let ed = LayoutsWindow(); ed.accessProvider = { true }
+                ed.contextProvider = { WorkspaceContext(screens: [screen], counts: [screen.uuid: 2], desktops: [screen.uuid: 1]) }
+                ed.launchProviders = launching(CountingMover(), Calls(), outcome: nil)
+                ed.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
+                ed.screens = [screen]; ed.spaces = [screen.uuid: 2]
+                ed.screenPopUp.addItem(withTitle: screen.name); ed.desktopPopUp.addItems(withTitles: ["Desktop 1", "Desktop 2"])
+                ed.mode.selectItem(at: 1); ed.pick(); ed.canvas.editor?.selected = 0; ed.refresh()
+                ed.advancedWindow.setContentSize(NSSize(width: 980, height: 640)); ed.advancedWindow.contentView?.layoutSubtreeIfNeeded()
+                if let hint = ed.members.arrangedSubviews.compactMap({ ($0 as? NSStackView)?.arrangedSubviews.first { $0.identifier?.rawValue == "memberHint" } as? NSTextField }).first { hints.append(hint.stringValue) }
+                try shot(ed.advancedWindow, "editor-member-hint-" + (on ? "starts" : "off"))
+                ed.window.close(); ed.advancedWindow.close()
+            }
+            return greyed && hints == [LayoutsWindow().memberHint(startsOnRestore: true), LayoutsWindow().memberHint(startsOnRestore: false)]
+        })
         check("automatic restore waits while the editor holds a draft", {
             LayoutsWindow.shown = editor; editor.pick(); editor.ruleEdits["draft.rule"] = AppRule(bundleID: "draft.rule", desktop: 1, screen: screen.uuid, area: AppRule.full)
             defer { LayoutsWindow.shown = nil; editor.pick() }
