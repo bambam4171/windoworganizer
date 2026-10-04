@@ -14,13 +14,6 @@ private func tilesPlan(gap: Int, windows: [WindowInfo]) -> Plan? {
     return planRestore(l, windows: windows, screens: [laptop], desktops: ["MBP": 1])
 }
 
-private func gapBetween(_ a: Frame, _ b: Frame) -> Double? {
-    if abs((a.y + a.height) - (b.y + b.height)) < 1 || abs(a.y - b.y) < 1 || true {
-        if b.x >= a.x + a.width - 0.5 { return b.x - (a.x + a.width) }
-    }
-    return nil
-}
-
 let gapChecks: [(String, @Sendable () throws -> Void)] = [
     ("presets keep the gap only between windows, outer edges flush", {
         for preset in [Preset.grid, .columns, .rows] {
