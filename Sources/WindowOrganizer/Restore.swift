@@ -50,6 +50,9 @@ struct WorkspaceProviders {
     var snapshot: () -> (ListReport, Listing) = { WindowOrganizer.snapshot() }
     var mover: (Listing) -> WindowMover = { AXMover(elements: $0.elements) }
     var store: () -> LayoutStore = { layoutStore() }
+    var running: () -> Set<String> = { liveRunning() }
+    var launch: (String, @escaping @MainActor (LaunchOutcome) -> Void) -> Void = { liveLaunch($0, $1) }
+    var appName: (String) -> String = { liveAppName($0) }
     static var live: WorkspaceProviders { WorkspaceProviders() }
 }
 
@@ -101,7 +104,7 @@ func rememberNow(_ p: WorkspaceProviders = .live) -> String {
 /// An automatic arrange (a trigger, not the menu) stays quiet when there is no permission or nothing remembered: nil,
 /// and never moves windows under a canvas preview the editor has not applied.
 @MainActor
-func restoreNow(automatic: Bool = false, _ p: WorkspaceProviders = .live) -> String? {
+func restoreNow(automatic: Bool = false, launch: LaunchTrigger? = nil, _ p: WorkspaceProviders = .live) -> String? {
     if automatic && LayoutsWindow.shown?.dirty == true { return nil }
     do {
         let (report, listing, ctx) = try guardedSnapshot(p)
@@ -110,9 +113,14 @@ func restoreNow(automatic: Bool = false, _ p: WorkspaceProviders = .live) -> Str
         guard listing.warnings.isEmpty else { return "Not restored: " + listing.warnings.joined(separator: " ") }
         if automatic && !ctx.isIdentified { return nil }
         let layouts = try p.store().load()
-        guard let plan = planRestore(layouts, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
-        else { return automatic ? nil : ResultLine.nothingRemembered(desktop: desktop, at: clock()) }
-        return ResultLine.restored(RestoreSession.shared.apply(plan, listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx }), desktop: desktop, at: clock())
+        let plan = planRestore(layouts, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
+        // Started after the arrangement is read, so the batch places the new windows; its context is this one.
+        let starting = startMissingApps(launch, layouts: layouts, report: report, desktops: ctx.desktops, p)
+        guard let plan else {
+            if !starting.isEmpty { return ResultLine.restored(ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0), starting: starting, desktop: desktop, at: clock()) }
+            return automatic ? nil : ResultLine.nothingRemembered(desktop: desktop, at: clock())
+        }
+        return ResultLine.restored(RestoreSession.shared.apply(plan, listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx }), starting: starting, desktop: desktop, at: clock())
     } catch {
         return "Not restored: \(error)"
     }
@@ -128,14 +136,14 @@ final class RestoreSession {
     private var setup = ""
     private var desktops: [String: Int] = [:]
     var canUndo: Bool { !entries.isEmpty }
-    func apply(_ plan: Plan, listing: Listing, context: WorkspaceContext, mover: WindowMover? = nil, stillValid: (() -> Bool)? = nil) -> ApplyResult {
+    func apply(_ plan: Plan, listing: Listing, context: WorkspaceContext, mover: WindowMover? = nil, stillValid: (() -> Bool)? = nil, recordUndo: Bool = true) -> ApplyResult {
         let mover = mover ?? AXMover(elements: listing.elements)
         let result = applyPlan(plan, mover: mover, stillValid: stillValid ?? { WorkspaceContext.live() == context })
         let changed = plan.moves.compactMap { move -> (Move, AXUIElement, Frame)? in
             guard let element = listing.elements[move.windowID], let after = axFrame(element), after != move.from else { return nil }
             return (move, element, after)
         }
-        if !changed.isEmpty {
+        if recordUndo, !changed.isEmpty {
             entries = changed; setup = ScreenSetup(screens: context.screens).key; desktops = context.desktops
         }
         return result

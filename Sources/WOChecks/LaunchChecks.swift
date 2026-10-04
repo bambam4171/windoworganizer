@@ -1,7 +1,7 @@
 import Foundation
 import WindowOrganizerCore
 
-// WO-LAUNCH-MISSING S1 (Zeus design Z-417): which apps a restore starts, the two settings, the result lines.
+// WO-LAUNCH-MISSING (Zeus design Z-417, addendum Z-424): which apps a restore starts, the trigger defaults, the result lines.
 
 private let launchSetup = ScreenSetup(screens: [laptop, dell])
 private let lMail = "com.apple.mail", lNotes = "com.apple.Notes", lSafari = "com.apple.Safari"
@@ -19,8 +19,8 @@ private func layouts(_ kind: ScreenArrangement.Kind, settings: ArrangeSettings? 
     return l
 }
 
-private func start(_ l: Layouts, running: Set<String> = [], automatic: Bool = false, scope: WorkspaceSelection? = nil) -> [String] {
-    appsToStart(l, screens: [laptop, dell], desktops: ["MBP": 1, "DELL": 1], scope: scope, running: running, automatic: automatic)
+private func start(_ l: Layouts, running: Set<String> = [], scope: WorkspaceSelection? = nil) -> [String] {
+    appsToStart(l, screens: [laptop, dell], desktops: ["MBP": 1, "DELL": 1], scope: scope, running: running)
 }
 
 let launchChecks: [(String, @Sendable () throws -> Void)] = [
@@ -46,18 +46,16 @@ let launchChecks: [(String, @Sendable () throws -> Void)] = [
     ("an autoTile screen has nothing to start (launch)", {
         try expectEqual(start(layouts(.autoTile)), [])
     }),
-    ("a trigger starts nothing with the defaults (launch)", {
-        try expectEqual(start(layouts(.snapshot([place(lMail, on: laptop)])), automatic: true), [])
+    ("the four triggers default to on, on, on and off (launch)", {
+        try expectEqual(LaunchTrigger.allCases.map(\.rawValue), ["restore", "applySave", "screenPlug", "login"])
+        try expectEqual(LaunchTrigger.allCases.map(\.defaultOn), [true, true, true, false])
     }),
-    ("a trigger starts the app when launchOnTrigger is on (launch)", {
-        let l = layouts(.snapshot([place(lMail, on: laptop)]), settings: ArrangeSettings(launchOnTrigger: true))
-        try expectEqual(start(l, automatic: true), [lMail])
-        try expectEqual(start(l, automatic: false), [lMail])
-    }),
-    ("launchOnRestore off starts nothing on a restore but may still on a trigger (launch)", {
-        let l = layouts(.snapshot([place(lMail, on: laptop)]), settings: ArrangeSettings(launchOnRestore: false, launchOnTrigger: true))
-        try expectEqual(start(l, automatic: false), [])
-        try expectEqual(start(l, automatic: true), [lMail])
+    ("a screen that was not there before is a plug, a wake or an unplug is not (launch)", {
+        try expect(gainedScreen(previous: ["MBP"], current: ["MBP", "DELL"]), "a new screen")
+        try expect(!gainedScreen(previous: ["MBP", "DELL"], current: ["MBP", "DELL"]), "a wake or a resolution change")
+        try expect(!gainedScreen(previous: ["MBP", "DELL"], current: ["MBP"]), "an unplug")
+        try expect(gainedScreen(previous: ["MBP", "DELL"], current: ["MBP", "TV"]), "one out, one in")
+        try expect(gainedScreen(previous: [], current: ["MBP"]), "from nothing")
     }),
     ("the scope keeps the other screen's apps out (launch)", {
         var l = layouts(.snapshot([place(lMail, on: laptop)]))
@@ -65,14 +63,10 @@ let launchChecks: [(String, @Sendable () throws -> Void)] = [
         try expectEqual(start(l, scope: WorkspaceSelection(screenUUID: "DELL", desktop: 1)), [lNotes])
         try expectEqual(start(l, scope: WorkspaceSelection(screenUUID: "MBP", desktop: 2)), [])
     }),
-    ("the settings are optional and an untouched file stays byte-identical (launch)", {
-        let plain = try JSONEncoder().encode(ArrangeSettings())
-        try expectEqual(String(decoding: plain, as: UTF8.self), "{}")
-        let s = ArrangeSettings()
-        try expect(s.startsMissingOnRestore && !s.startsMissingOnTrigger, "defaults")
-        let set = ArrangeSettings(launchOnRestore: false, launchOnTrigger: true)
-        let back = try JSONDecoder().decode(ArrangeSettings.self, from: JSONEncoder().encode(set))
-        try expect(!back.startsMissingOnRestore && back.startsMissingOnTrigger, "round trip")
+    ("a file with the S1 keys loads, and an untouched file stays byte-identical (launch)", {
+        try expectEqual(String(decoding: try JSONEncoder().encode(ArrangeSettings()), as: UTF8.self), "{}")
+        let old = try JSONDecoder().decode(ArrangeSettings.self, from: Data(#"{"gap":4,"launchOnRestore":false,"launchOnTrigger":true}"#.utf8))
+        try expectEqual(old, ArrangeSettings(gap: 4))
     }),
     ("the restore line names the apps it starts (launch)", {
         let r = ApplyResult(placed: 2, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 2)

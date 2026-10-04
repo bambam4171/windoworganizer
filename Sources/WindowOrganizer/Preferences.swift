@@ -6,11 +6,15 @@ import WindowOrganizerCore
 @MainActor
 enum Preferences {
     static let changed = Notification.Name("WindowOrganizerPreferencesChanged")
-    static let defaults = UserDefaults.standard
+    static var defaults = UserDefaults.standard
     static var paused: Bool { get { defaults.bool(forKey: "paused") } set { defaults.set(newValue, forKey: "paused") } }
     static var restoreAtLaunch: Bool { defaults.bool(forKey: "restoreAtLaunch") }
     static var restoreOnScreens: Bool { defaults.bool(forKey: "restoreOnScreens") }
     static var arrangeNewWindows: Bool { defaults.bool(forKey: "arrangeNewWindows") }
+    /// Start-missing-apps switches (WO-LAUNCH-MISSING S2): unset means the trigger's default, never `defaults.bool`.
+    static func startsMissing(_ trigger: LaunchTrigger) -> Bool {
+        defaults.object(forKey: "startMissing." + trigger.rawValue) as? Bool ?? trigger.defaultOn
+    }
     static var key: String { defaults.string(forKey: "restoreKey") ?? "r" }
     static var shortcut: Shortcut { Shortcut(key: key, display: "⌃⌥⌘" + key.uppercased()) }
 }
@@ -24,6 +28,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
     let shortcut = NSPopUpButton()
     let login = NSButton(checkboxWithTitle: "Open Window Organizer at login", target: nil, action: nil)
     var toggles: [NSButton] = []
+    var startToggles: [NSButton] = []
     static func show() {
         let s = shown ?? SettingsWindow(); shown = s; s.refresh()
         NSApp.activate(ignoringOtherApps: true); s.window.center(); s.window.makeKeyAndOrderFront(nil)
@@ -43,6 +48,14 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
             let b = NSButton(checkboxWithTitle: text, target: self, action: #selector(toggle(_:)))
             b.identifier = NSUserInterfaceItemIdentifier(key); toggles.append(b)
         }
+        let startItems: [(LaunchTrigger, String)] = [(.restore, "When I restore a layout"), (.applySave, "When I click Apply & Save in the editor"),
+                                                     (.screenPlug, "When a display is connected"), (.login, "When Window Organizer opens (for example at login)")]
+        for (trigger, text) in startItems {
+            let b = NSButton(checkboxWithTitle: text, target: self, action: #selector(toggleStart(_:)))
+            b.identifier = NSUserInterfaceItemIdentifier("startMissing." + trigger.rawValue); startToggles.append(b)
+        }
+        let startNote = NSTextField(wrappingLabelWithString: "Only apps from a saved layout are started. An app that is already running is never reopened.")
+        startNote.textColor = .secondaryLabelColor; startNote.font = .systemFont(ofSize: 11)
         shortcut.addItems(withTitles: HotKey.keyCodes.keys.sorted().map { "⌃⌥⌘" + $0.uppercased() })
         shortcut.target = self; shortcut.action = #selector(changeShortcut)
         login.target = self; login.action = #selector(toggleLogin)
@@ -53,7 +66,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         privacy.textColor = .secondaryLabelColor; privacy.font = .systemFont(ofSize: 11)
         let all = NSStackView(views: [title, intro, permission, permissionButton, NSBox(),
             heading("Automatic arrangement"), toggles[0], toggles[1], toggles[2], login,
-            NSStackView(views: [NSTextField(labelWithString: "Restore shortcut"), shortcut]), NSBox(), heading("Your layouts"), NSButton(title: "Open Layouts…", target: self, action: #selector(openLayouts)), data, NSButton(title: "Recover previous saved layout…", target: self, action: #selector(recoverPrevious)), privacy, message])
+            NSStackView(views: [NSTextField(labelWithString: "Restore shortcut"), shortcut]), NSBox(), heading("Start missing apps"), startNote, startToggles[0], startToggles[1], startToggles[2], startToggles[3], NSBox(), heading("Your layouts"), NSButton(title: "Open Layouts…", target: self, action: #selector(openLayouts)), data, NSButton(title: "Recover previous saved layout…", target: self, action: #selector(recoverPrevious)), privacy, message])
         all.orientation = .vertical; all.alignment = .leading; all.spacing = 12
         all.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         for v in all.arrangedSubviews where v is NSBox { (v as? NSBox)?.boxType = .separator }
@@ -69,10 +82,23 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         permission.stringValue = Permission.trusted ? "✓ Accessibility access is enabled." : "Enable Window Organizer under Privacy & Security → Accessibility to read and move windows."
         permission.textColor = Permission.trusted ? .systemGreen : .labelColor
         for b in toggles { b.state = Preferences.defaults.bool(forKey: b.identifier!.rawValue) ? .on : .off }
+        for b in startToggles {
+            guard let t = LaunchTrigger(rawValue: String(b.identifier!.rawValue.dropFirst("startMissing.".count))) else { continue }
+            b.state = Preferences.startsMissing(t) ? .on : .off
+            let parent: (key: String, name: String)? = t == .screenPlug ? ("restoreOnScreens", "Restore after displays change, and on pending desktops")
+                : t == .login ? ("restoreAtLaunch", "Restore when this app opens") : nil
+            b.isEnabled = parent.map { Preferences.defaults.bool(forKey: $0.key) } ?? true
+            b.toolTip = parent.map { "Needs the switch “\($0.name)”." }
+        }
         shortcut.selectItem(withTitle: Preferences.shortcut.display)
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
     @objc func toggle(_ b: NSButton) {
+        guard let key = b.identifier?.rawValue else { return }
+        Preferences.defaults.set(b.state == .on, forKey: key)
+        NotificationCenter.default.post(name: Preferences.changed, object: nil)
+    }
+    @objc func toggleStart(_ b: NSButton) {
         guard let key = b.identifier?.rawValue else { return }
         Preferences.defaults.set(b.state == .on, forKey: key)
         NotificationCenter.default.post(name: Preferences.changed, object: nil)

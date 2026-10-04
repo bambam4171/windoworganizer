@@ -411,6 +411,183 @@ func runUISmoke() -> Int32 {
             let placed = placeNewWindow(fakeElement, app: "Terminal", fake(right, flipAt: nil))
             return wrong == nil && mover.sets.isEmpty && placed?.contains("placed") == true && right.sets == [1]
         })
+        // WO-LAUNCH-MISSING S2: the start switches, the batch and the editor's Apply & Save, all on injected providers.
+        let notes = "com.apple.Notes"
+        let w2 = WindowInfo(windowID: 2, bundleID: notes, title: "n", frame: Frame(x: 20, y: 40, width: 300, height: 300), screenUUID: screen.uuid, order: 1)
+        let wNotes = WindowInfo(windowID: 2, bundleID: notes, title: "n", frame: Frame(x: 600, y: 500, width: 200, height: 200), screenUUID: screen.uuid, order: 1)
+        var withNotes = Layouts(); withNotes.set(remember([w, w2], on: screen), setup: setup, desktop: 1, screen: screen.uuid)
+        let realDefaults = Preferences.defaults, suiteName = "wo.smoke.\(getpid())"
+        Preferences.defaults = UserDefaults(suiteName: suiteName)!
+        defer { Preferences.defaults.removePersistentDomain(forName: suiteName); Preferences.defaults = realDefaults; LaunchBatch.deliver = { _ in } }
+        final class Calls { var ids: [String] = [] }
+        func launching(_ mover: CountingMover, _ calls: Calls, windows: [WindowInfo] = [wMoved], outcome: LaunchOutcome? = .started("Notes")) -> WorkspaceProviders {
+            var p = fake(mover, flipAt: nil, windows: windows)
+            p.running = { [w.bundleID] }
+            p.launch = { id, done in calls.ids.append(id); if let outcome { done(outcome) } }
+            p.appName = { $0 == notes ? "Notes" : $0 }
+            return p
+        }
+        var lines: [String] = []
+        LaunchBatch.deliver = { lines.append($0) }
+        LaunchBatch.deadline = .milliseconds(100)
+        func spin() { RunLoop.current.run(until: Date().addingTimeInterval(0.4)) }
+        check("start switches: unset keys read their defaults, a stored value wins, the checkbox agrees", {
+            let before = Preferences.startsMissing(.restore) && Preferences.startsMissing(.applySave) && Preferences.startsMissing(.screenPlug) && !Preferences.startsMissing(.login)
+            let settings = SettingsWindow(); settings.refresh()
+            @MainActor func box(_ t: LaunchTrigger) -> NSButton { settings.startToggles.first { $0.identifier?.rawValue == "startMissing." + t.rawValue }! }
+            let shown = box(.restore).state == .on && box(.login).state == .off
+            Preferences.defaults.set(true, forKey: "startMissing.login"); Preferences.defaults.set(false, forKey: "startMissing.restore")
+            settings.refresh()
+            let stored = Preferences.startsMissing(.login) && !Preferences.startsMissing(.restore) && box(.login).state == .on && box(.restore).state == .off
+            Preferences.defaults.removeObject(forKey: "startMissing.login"); Preferences.defaults.removeObject(forKey: "startMissing.restore")
+            return before && shown && stored
+        })
+        check("start switches: a child is greyed while its parent is off, and keeps its value", {
+            let settings = SettingsWindow()
+            Preferences.defaults.set(false, forKey: "restoreOnScreens"); Preferences.defaults.set(false, forKey: "restoreAtLaunch"); settings.refresh()
+            @MainActor func box(_ t: LaunchTrigger) -> NSButton { settings.startToggles.first { $0.identifier?.rawValue == "startMissing." + t.rawValue }! }
+            let off = !box(.screenPlug).isEnabled && !box(.login).isEnabled && box(.restore).isEnabled && box(.screenPlug).state == .on && box(.screenPlug).toolTip?.contains("Restore after displays change") == true
+            Preferences.defaults.set(true, forKey: "restoreOnScreens"); Preferences.defaults.set(true, forKey: "restoreAtLaunch"); settings.refresh()
+            let on = box(.screenPlug).isEnabled && box(.login).isEnabled
+            Preferences.defaults.removeObject(forKey: "restoreOnScreens"); Preferences.defaults.removeObject(forKey: "restoreAtLaunch")
+            return off && on
+        })
+        check("Restore, a plug and a start each start the missing app only when their switch is on; nil starts nothing", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts) }
+            var ok = true
+            for t in [LaunchTrigger.restore, .screenPlug, .login] {
+                for on in [true, false] {
+                    Preferences.defaults.set(on, forKey: "startMissing." + t.rawValue)
+                    let calls = Calls(); let line = restoreNow(automatic: t != .restore, launch: t, launching(CountingMover(), calls)) ?? ""
+                    LaunchBatch.current?.cancel()
+                    ok = ok && calls.ids == (on ? [notes] : []) && line.contains("starting Notes") == on
+                    Preferences.defaults.removeObject(forKey: "startMissing." + t.rawValue)
+                }
+            }
+            for t in LaunchTrigger.allCases { Preferences.defaults.set(true, forKey: "startMissing." + t.rawValue) }
+            let calls = Calls(); _ = restoreNow(automatic: false, launch: nil, launching(CountingMover(), calls)); LaunchBatch.current?.cancel()
+            for t in LaunchTrigger.allCases { Preferences.defaults.removeObject(forKey: "startMissing." + t.rawValue) }
+            return ok && calls.ids.isEmpty
+        })
+        check("a settle with the same screens (wake, resolution) is no plug; a gained screen is; a pending desktop never starts", {
+            var watch = ScreenWatch(known: ["A"])
+            let wake = launchTrigger(for: .screensSettled(displays: []), plugged: watch.settle(["A"]))
+            let plug = launchTrigger(for: .screensSettled(displays: []), plugged: watch.settle(["A", "B"]))
+            let again = launchTrigger(for: .screensSettled(displays: []), plugged: watch.settle(["A", "B"]))
+            let unplug = launchTrigger(for: .screensSettled(displays: []), plugged: watch.settle(["A"]))
+            return wake == nil && plug == .screenPlug && again == nil && unplug == nil
+                && launchTrigger(for: .spaceChanged(displays: []), plugged: true) == nil && launchTrigger(for: .start(screens: [], displays: []), plugged: false) == .login
+        })
+        check("a batch expects only the apps it started, and not after it ended", {
+            let batch = LaunchBatch.begin([notes], scope: nil, launching(CountingMover(), Calls(), outcome: nil)) { _ in }
+            let during = batch?.expects(notes) == true && batch?.expects(w.bundleID) == false && batch?.expects(nil) == false
+            batch?.cancel()
+            return during && batch?.expects(notes) == false && LaunchBatch.current == nil
+        })
+        check("the sweep places a window that existed before the batch saw it, and only that app's", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts) }
+            lines = []; let mover = CountingMover(), calls = Calls()
+            LaunchBatch.begin([notes], scope: nil, launching(mover, calls, windows: [wMoved, wNotes]))
+            spin()
+            return calls.ids == [notes] && mover.sets == [2] && lines.count == 1 && lines[0].contains("started Notes")
+        })
+        check("an app that opens no window is named late after the deadline", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts) }
+            lines = []; let mover = CountingMover()
+            LaunchBatch.begin([notes], scope: nil, launching(mover, Calls(), windows: [wMoved]))
+            spin()
+            return mover.sets.isEmpty && lines.count == 1 && lines[0].contains("Notes did not open a window within 20 s")
+        })
+        check("a desktop change ends the batch at once and moves nothing", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts) }
+            lines = []; let mover = CountingMover(); var desk = atDesktop1
+            var p = launching(mover, Calls(), windows: [wMoved, wNotes], outcome: nil); p.context = { desk }
+            let batch = LaunchBatch.begin([notes], scope: nil, p)
+            desk = atDesktop2; batch?.contextMayHaveChanged()
+            spin()
+            return mover.sets.isEmpty && lines.count == 1 && lines[0].contains("stopped placing: the desktop changed") && batch?.finished == true
+        })
+        check("a notification with the same desktop does not end the batch", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts); LaunchBatch.current?.cancel() }
+            lines = []; let mover = CountingMover()
+            let batch = LaunchBatch.begin([notes], scope: nil, launching(mover, Calls(), outcome: nil))
+            batch?.contextMayHaveChanged()
+            return batch?.finished == false && lines.isEmpty
+        })
+        check("only a window of an app the batch waits for belongs to the batch", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts); LaunchBatch.current?.cancel() }
+            let batch = LaunchBatch.begin([notes], scope: nil, launching(CountingMover(), Calls(), outcome: nil))
+            return batch != nil && LaunchBatch.owner(of: notes) === batch && LaunchBatch.owner(of: "com.apple.Safari") == nil && LaunchBatch.owner(of: nil) == nil
+        })
+        check("a missing or failing app is named in the final line", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts) }
+            lines = []
+            LaunchBatch.begin([notes], scope: nil, launching(CountingMover(), Calls(), outcome: .notInstalled))
+            LaunchBatch.begin([notes], scope: nil, launching(CountingMover(), Calls(), outcome: .failed("Notes")))
+            return lines.count == 2 && lines.allSatisfy { $0.contains("Notes could not be started") }
+        })
+        check("a second batch ends the first without a line of its own", {
+            lines = []
+            let first = LaunchBatch.begin([notes], scope: nil, launching(CountingMover(), Calls(), outcome: nil))
+            let second = LaunchBatch.begin([notes], scope: nil, launching(CountingMover(), Calls(), outcome: nil))
+            let ended = first?.finished == true && second?.finished == false && LaunchBatch.current === second
+            spin()
+            return ended && lines.count == 1
+        })
+        check("Apply & Save starts the missing member of a zones layout; the capture layout and a switch that is off start nothing", {
+            defer { try? layoutStore().save(guardLayouts); LaunchBatch.current?.cancel() }
+            let zone = Zone(rect: UnitRect(x: 0, y: 0, width: 1, height: 1), members: [ZoneMember(bundleID: notes)])
+            var zoned = Layouts(); zoned.set(ScreenArrangement(kind: .zones([zone])), setup: setup, desktop: 1, screen: screen.uuid)
+            editor.desktopPopUp.selectItem(at: 0); editor.pick()
+            @MainActor func run(_ layouts: Layouts, on: Bool) throws -> [String] {
+                try layoutStore().save(layouts); Preferences.defaults.set(on, forKey: "startMissing.applySave")
+                let calls = Calls(); editor.launchProviders = launching(CountingMover(), calls, outcome: nil)
+                editor.startAfterSave(); LaunchBatch.current?.cancel(); return calls.ids
+            }
+            let zones = try run(zoned, on: true), capture = try run(guardLayouts, on: true), off = try run(zoned, on: false)
+            Preferences.defaults.removeObject(forKey: "startMissing.applySave"); editor.launchProviders = launching(CountingMover(), Calls(), outcome: nil)
+            return zones == [notes] && capture.isEmpty && off.isEmpty
+        })
+        func shot(_ window: NSWindow, _ name: String) throws {
+            guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw CocoaError(.fileWriteUnknown) }
+            // Offscreen, the window background is not painted: give the content view the appearance's own background.
+            view.wantsLayer = true
+            window.effectiveAppearance.performAsCurrentDrawingAppearance { view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            view.layer?.backgroundColor = nil
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+        }
+        check("shots: Settings with a greyed switch (light, dark) and the editor member hint in both states", {
+            defer { Preferences.defaults.removeObject(forKey: "restoreOnScreens"); Preferences.defaults.removeObject(forKey: "startMissing.restore"); try? layoutStore().save(guardLayouts) }
+            Preferences.defaults.set(false, forKey: "restoreOnScreens")
+            let settings = SettingsWindow(); settings.refresh()
+            for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                settings.window.appearance = NSAppearance(named: appearance); settings.window.contentView?.layoutSubtreeIfNeeded()
+                try shot(settings.window, "settings-start-missing-\(mode)")
+            }
+            let screenPlug = settings.startToggles.first { $0.identifier?.rawValue == "startMissing.screenPlug" }!
+            let greyed = !screenPlug.isEnabled
+            // A name that sorts first, so the member row with its hint is inside the shot.
+            let zone = Zone(rect: UnitRect(x: 0, y: 0, width: 1, height: 1), members: [ZoneMember(bundleID: "a.first.app")])
+            var zoned = Layouts(); zoned.set(ScreenArrangement(kind: .zones([zone])), setup: setup, desktop: 1, screen: screen.uuid)
+            try layoutStore().save(zoned)
+            var hints: [String] = []
+            for on in [true, false] {
+                Preferences.defaults.set(on, forKey: "startMissing.restore")
+                let ed = LayoutsWindow(); ed.accessProvider = { true }
+                ed.contextProvider = { WorkspaceContext(screens: [screen], counts: [screen.uuid: 2], desktops: [screen.uuid: 1]) }
+                ed.launchProviders = launching(CountingMover(), Calls(), outcome: nil)
+                ed.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
+                ed.screens = [screen]; ed.spaces = [screen.uuid: 2]
+                ed.screenPopUp.addItem(withTitle: screen.name); ed.desktopPopUp.addItems(withTitles: ["Desktop 1", "Desktop 2"])
+                ed.mode.selectItem(at: 1); ed.pick(); ed.canvas.editor?.selected = 0; ed.refresh()
+                ed.advancedWindow.setContentSize(NSSize(width: 980, height: 640)); ed.advancedWindow.contentView?.layoutSubtreeIfNeeded()
+                if let hint = ed.members.arrangedSubviews.compactMap({ ($0 as? NSStackView)?.arrangedSubviews.first { $0.identifier?.rawValue == "memberHint" } as? NSTextField }).first { hints.append(hint.stringValue) }
+                try shot(ed.advancedWindow, "editor-member-hint-" + (on ? "starts" : "off"))
+                ed.window.close(); ed.advancedWindow.close()
+            }
+            return greyed && hints == [LayoutsWindow().memberHint(startsOnRestore: true), LayoutsWindow().memberHint(startsOnRestore: false)]
+        })
         check("automatic restore waits while the editor holds a draft", {
             LayoutsWindow.shown = editor; editor.pick(); editor.ruleEdits["draft.rule"] = AppRule(bundleID: "draft.rule", desktop: 1, screen: screen.uuid, area: AppRule.full)
             defer { LayoutsWindow.shown = nil; editor.pick() }
@@ -680,6 +857,13 @@ func runUISmoke() -> Int32 {
             let corrupt = Data("broken".utf8); try corrupt.write(to: layoutStore().file); editor.pick(); editor.save()
             let after = try Data(contentsOf: layoutStore().file)
             return editor.readFailed && !editor.saveButton.isEnabled && after == corrupt
+        })
+        check("no check reached the real launcher, and the real launcher refuses to open an app under a test state dir", {
+            var outcome: LaunchOutcome?
+            liveLaunch("com.apple.mail") { outcome = $0 }
+            spin()
+            guard case .failed? = outcome else { return false }
+            return blockedLiveLaunches == 1  // only the probe above
         })
         editor.window.close()
     } catch { print("FAIL UI setup: \(error)"); failed += 1 }

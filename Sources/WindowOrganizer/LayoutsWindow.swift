@@ -77,6 +77,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     var capturedDraft = false
     var contextProvider: () -> WorkspaceContext = { WorkspaceContext.live() }
     var snapshotProvider: () -> (ListReport, Listing) = { snapshot() }
+    var launchProviders: WorkspaceProviders = .live
     var applyProvider: (Plan, Listing, WorkspaceContext) -> ApplyResult = { RestoreSession.shared.apply($0, listing: $1, context: $2) }
     var contextTimer: Timer?
     var loadedSetup = ""
@@ -406,10 +407,13 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         // A settings-only change writes the settings alone: capturing the live windows would overwrite the layout and clear the rules (Z-380).
         if manualDraft == nil, !unsaved.isEmpty, unsaved.allSatisfy({ $0 == "gap settings" || $0 == "window order" }) {
             save()
-            if unsaved.isEmpty, let screen { result.stringValue = "✓ Settings saved · \(screen.name), \(desktopName)" + settingsSummary }
+            if unsaved.isEmpty, let screen { result.stringValue = "✓ Settings saved · \(screen.name), \(desktopName)" + settingsSummary; startAfterSave() }
             refreshWorkspaceStatus(); return
         }
-        guard let draft = manualDraft else { saveCurrentArrangement(); previewMode.selectItem(at: 0); updatePreview(); refreshWorkspaceStatus(); return }
+        guard let draft = manualDraft else {
+            saveCurrentArrangement(); if !dirty { startAfterSave() }
+            previewMode.selectItem(at: 0); updatePreview(); refreshWorkspaceStatus(); return
+        }
         guard !advancedPending else {
             result.stringValue = "Not applied: Advanced has unsaved changes for this desktop. Save or discard them first."; return
         }
@@ -439,6 +443,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             refreshSnapshotRows(); refresh()
             previewMode.selectItem(at: 0); updatePreview()
             assert(unsaved.isEmpty)
+            defer { startAfterSave() }
             result.stringValue = "✓ Layout saved · \(screen.name), \(desktopName)" + settingsSummary + (applied.keptMinimum > 0 ? " · Some apps kept their minimum size." : "")
             refreshWorkspaceStatus()
         } catch { result.stringValue = "Not saved: \(error)" }
@@ -654,12 +659,23 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         do {
             let (selection, report, listing, context) = try workspaceSnapshot()
             let saved = try layoutStore().load()
-            guard let plan = try planWorkspace(saved, selection: selection, windows: report.windows, screens: context.screens, desktops: context.desktops) else {
-                result.stringValue = "No saved arrangement for this screen and desktop."; return
+            let plan = try planWorkspace(saved, selection: selection, windows: report.windows, screens: context.screens, desktops: context.desktops)
+            let starting = startMissingApps(.restore, layouts: saved, report: report, desktops: context.desktops, scope: selection, launchProviders)
+            guard let plan else {
+                result.stringValue = starting.isEmpty ? "No saved arrangement for this screen and desktop."
+                    : ResultLine.restored(ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0), starting: starting, desktop: desktopNumber, at: clock())
+                return
             }
-            result.stringValue = ResultLine.restored(applyProvider(plan, listing, context), desktop: desktopNumber, at: clock())
+            result.stringValue = ResultLine.restored(applyProvider(plan, listing, context), starting: starting, desktop: desktopNumber, at: clock())
             refreshLivePreview()
         } catch { result.stringValue = "Not restored: \(error)" }
+    }
+    /// After a successful Apply & Save: starts the apps the saved layout needs (switch "Apply & Save"). The capture and canvas
+    /// branches save exactly the open windows, so this is empty there; a zones layout with a member that is not running is not.
+    func startAfterSave() {
+        guard let (selection, report, _, context) = try? workspaceSnapshot(), let saved = try? layoutStore().load() else { return }
+        let names = startMissingApps(.applySave, layouts: saved, report: report, desktops: context.desktops, scope: selection, launchProviders)
+        if !names.isEmpty { result.stringValue += " · starting " + names.joined(separator: ", ") }
     }
     func allowDiscard() -> Bool {
         window.makeFirstResponder(nil)
@@ -801,9 +817,20 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             pattern.placeholderString = "Any title"; pattern.toolTip = "Optional title filter; * matches any text"
             pattern.identifier = NSUserInterfaceItemIdentifier(id); pattern.target = self; pattern.action = #selector(zonePattern(_:))
             pattern.isEnabled = box.state == .on; pattern.widthAnchor.constraint(equalToConstant: 110).isActive = true
-            let row = NSStackView(views: [box, pattern]); row.orientation = .vertical; row.alignment = .leading; row.spacing = 4
+            var views: [NSView] = [box, pattern]
+            if box.state == .on, !launchProviders.running().contains(id) {
+                let note = NSTextField(labelWithString: memberHint(startsOnRestore: Preferences.startsMissing(.restore)))
+                note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor; note.identifier = NSUserInterfaceItemIdentifier("memberHint")
+                note.lineBreakMode = .byWordWrapping; note.maximumNumberOfLines = 0; note.preferredMaxLayoutWidth = 230
+                views.append(note)
+            }
+            let row = NSStackView(views: views); row.orientation = .vertical; row.alignment = .leading; row.spacing = 4
             members.addArrangedSubview(row)
         }
+    }
+
+    func memberHint(startsOnRestore: Bool) -> String {
+        startsOnRestore ? "not running, started when you restore" : "not running, not started (Settings › Start missing apps)"
     }
 
     /// The rules as they will be saved, for the picked desktop and screen.
