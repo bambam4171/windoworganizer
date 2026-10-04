@@ -21,5 +21,10 @@ public struct Frame: Codable, Equatable, Sendable {
                      y: min(max(y, area.y), area.y + area.height - h), width: w, height: h)
     }
 
+    /// Wholly within `area`, with 1 pt of tolerance for the rounding apps do.
+    public func isInside(_ area: Frame) -> Bool {
+        x >= area.x - 1 && y >= area.y - 1 && x + width <= area.x + area.width + 1 && y + height <= area.y + area.height + 1
+    }
+
     public var rect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
 }

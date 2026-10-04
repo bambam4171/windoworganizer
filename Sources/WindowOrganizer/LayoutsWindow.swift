@@ -424,7 +424,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             guard Set(actual.map(\.windowID)) == Set(draft.map(\.windowID)) else { throw WorkspaceActionError(message: "The open windows changed. Reset to refresh them before arranging.") }
             let moves = draft.compactMap { target -> Move? in
                 guard let source = actual.first(where: { $0.windowID == target.windowID }), source.frame != target.frame else { return nil }
-                return Move(windowID: source.windowID, from: source.frame, to: target.frame)
+                return Move(windowID: source.windowID, from: source.frame, to: target.frame, area: screen.visibleFrame)
             }
             let applied = applyProvider(Plan(moves: moves, skipped: [], unchanged: draft.count - moves.count), listing, context)
             guard applied.cancelled == 0 else { throw WorkspaceActionError(message: "The desktop changed while moving. Your preview is still here; try again.") }
@@ -648,7 +648,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             guard let plan = try planWorkspace(draft, selection: selection, windows: report.windows, screens: context.screens, desktops: context.desktops) else { return }
             let applied = applyProvider(plan, listing, context)
             mode.selectItem(at: 2); capturedDraft = true; refresh(); refreshLivePreview()
-            result.stringValue = ResultLine.restored(applied, desktop: desktopNumber, at: clock()) + ". Save to keep this screen's automatic grid."
+            result.stringValue = ResultLine.restored(applied, shifted: shiftedApps(applied, in: report.windows), desktop: desktopNumber, at: clock()) + ". Save to keep this screen's automatic grid."
         } catch { result.stringValue = "Not arranged: \(error)" }
     }
 
@@ -666,7 +666,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
                     : ResultLine.restored(ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0), starting: starting, desktop: desktopNumber, at: clock())
                 return
             }
-            result.stringValue = ResultLine.restored(applyProvider(plan, listing, context), starting: starting, desktop: desktopNumber, at: clock())
+            result.stringValue = { let applied = applyProvider(plan, listing, context)
+                return ResultLine.restored(applied, starting: starting, shifted: shiftedApps(applied, in: report.windows), desktop: desktopNumber, at: clock()) }()
             refreshLivePreview()
         } catch { result.stringValue = "Not restored: \(error)" }
     }

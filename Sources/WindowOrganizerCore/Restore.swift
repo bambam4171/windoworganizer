@@ -63,6 +63,7 @@ public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [Scr
     var plan = Plan(moves: [], skipped: [], unchanged: 0)
     // Every (window, target) pair is collected first, so the gap can be applied per screen before anything is compared.
     var wanted: [(screen: String, window: WindowInfo, target: Frame)] = []
+    let areas = Dictionary(screens.map { ($0.uuid, $0.visibleFrame) }, uniquingKeysWith: { a, _ in a })
     for ((place, screen), window) in zip(places, match.assigned) {
         guard let w = window else { plan.skipped.append(place.matcher); continue }
         let exact = place.screenUUID == screen.uuid && place.visibleFrame == screen.visibleFrame
@@ -107,7 +108,7 @@ public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [Scr
     for i in wanted.indices {
         let w = wanted[i].window, target = gapped[i] ?? wanted[i].target
         if close(w.frame, target) { plan.unchanged += 1 }
-        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
+        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target, area: areas[wanted[i].screen])) }
     }
     return plan
 }
@@ -158,37 +159,64 @@ public struct ApplyResult: Equatable, Sendable {
     public var notOpen: Int
     /// Moves not made because the desktop or screen changed while the plan ran.
     public var cancelled: Int
+    /// Windows that kept a larger size and were moved back inside their screen (they overlap a neighbour); also counted in keptMinimum.
+    public var shiftedIDs: [Int]
 
-    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int, cancelled: Int = 0) {
+    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int, cancelled: Int = 0, shiftedIDs: [Int] = []) {
         self.placed = placed; self.keptMinimum = keptMinimum; self.failed = failed
-        self.unchanged = unchanged; self.notOpen = notOpen; self.cancelled = cancelled
+        self.unchanged = unchanged; self.notOpen = notOpen; self.cancelled = cancelled; self.shiftedIDs = shiftedIDs
     }
 }
 
 /// Set, read back, one retry (plan §3). A window at its place but larger counts as "kept its minimum size".
+/// With a move `area` (WO-OFFSCREEN) the target is first clamped into it, and a window that stayed larger than its tile, or whose
+/// origin the app moved, is set once more where it lies inside the area: it overlaps a neighbour on its own screen instead of
+/// spilling onto the next one. Only a window bigger than the whole screen stays out, and that counts as failed.
 /// `stillValid` is asked before each move; on the first false no further window is touched and the rest count as cancelled.
 public func applyPlan(_ plan: Plan, mover: WindowMover, stillValid: () -> Bool = { true }) -> ApplyResult {
     var r = ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: plan.unchanged, notOpen: plan.skipped.count)
     for (index, move) in plan.moves.enumerated() {
         guard stillValid() else { r.cancelled = plan.moves.count - index; break }
         guard move.to.isValid else { r.failed += 1; continue }
-        mover.setFrame(move.to, of: move.windowID)
+        let area = move.area.flatMap { $0.isValid ? $0 : nil }
+        let to = area.map { move.to.contained(in: $0) } ?? move.to
+        mover.setFrame(to, of: move.windowID)
         var now = mover.frame(of: move.windowID)
-        if let f = now, close(f, move.to) { r.placed += 1; continue }
-        mover.setFrame(move.to, of: move.windowID)
+        if let f = now, close(f, to) { r.placed += 1; continue }
+        mover.setFrame(to, of: move.windowID)
         now = mover.frame(of: move.windowID)
         guard let f = now else { r.failed += 1; continue }
-        if close(f, move.to) { r.placed += 1 }
-        else if abs(f.x - move.to.x) <= 1, abs(f.y - move.to.y) <= 1,
-                f.width >= move.to.width - 1, f.height >= move.to.height - 1 { r.keptMinimum += 1 }
+        if close(f, to) { r.placed += 1; continue }
+        let atLeastTile = f.width >= to.width - 1 && f.height >= to.height - 1
+        let sameOrigin = abs(f.x - to.x) <= 1 && abs(f.y - to.y) <= 1
+        guard atLeastTile else { r.failed += 1; continue }
+        guard let area else {
+            if sameOrigin { r.keptMinimum += 1 } else { r.failed += 1 }
+            continue
+        }
+        let fitted = Frame(x: to.x, y: to.y, width: f.width, height: f.height).contained(in: area)
+        if close(fitted, f) { if sameOrigin { r.keptMinimum += 1 } else { r.failed += 1 }; continue }
+        mover.setFrame(fitted, of: move.windowID)
+        if let g = mover.frame(of: move.windowID), g.isInside(area) { r.keptMinimum += 1; r.shiftedIDs.append(move.windowID) }
         else { r.failed += 1 }
     }
     return r
 }
 
+/// The app names of the windows `applyPlan` had to move inside their screen, once each, in order.
+public func shiftedApps(_ r: ApplyResult, in windows: [WindowInfo]) -> [String] {
+    var names: [String] = []
+    for id in r.shiftedIDs {
+        guard let w = windows.first(where: { $0.windowID == id }) else { continue }
+        let name = w.appName ?? w.bundleID
+        if !names.contains(name) { names.append(name) }
+    }
+    return names
+}
+
 /// The menu's last-result line (plan §4): what happened, on which desktop, when.
 public enum ResultLine {
-    public static func restored(_ r: ApplyResult, starting: [String] = [], desktop: Int?, at time: String) -> String {
+    public static func restored(_ r: ApplyResult, starting: [String] = [], shifted: [String] = [], desktop: Int?, at time: String) -> String {
         if r.cancelled > 0 { return "Stopped: the desktop changed. Placed \(r.placed + r.keptMinimum), \(r.cancelled) left as they were · \(time)" }
         let inPlace = r.placed + r.unchanged
         var parts: [String] = []
@@ -197,7 +225,12 @@ public enum ResultLine {
                          : "none of the \(r.notOpen) remembered \(r.notOpen == 1 ? "window is" : "windows is") open")
         } else {
             parts.append("\(plural(inPlace, "window")) placed")
-            if r.keptMinimum > 0 { parts.append("\(r.keptMinimum) kept \(r.keptMinimum == 1 ? "its" : "their") minimum size") }
+            let moved = min(r.shiftedIDs.count, r.keptMinimum), plain = r.keptMinimum - moved
+            if plain > 0 { parts.append("\(plain) kept \(plain == 1 ? "its" : "their") minimum size") }
+            if moved > 0 {
+                let names = shifted.isEmpty ? "" : ": \(shifted.joined(separator: ", "))"
+                parts.append("\(moved) kept \(moved == 1 ? "its minimum size and was" : "their minimum size and were") moved inside the screen\(names)")
+            }
             if r.failed > 0 { parts.append("\(r.failed) could not be moved") }
             if r.notOpen > 0 { parts.append("\(r.notOpen) not open") }
         }
@@ -222,6 +255,7 @@ public enum ResultLine {
         if r.cancelled > 0 { return "Stopped: the desktop changed. New \(app) window left as it was · \(time)" }
         let what: String
         if r.placed > 0 { what = "placed" }
+        else if !r.shiftedIDs.isEmpty { what = "placed, it kept its minimum size and was moved inside the screen" }
         else if r.keptMinimum > 0 { what = "placed, it kept its minimum size" }
         else if r.failed > 0 { what = "could not be moved" }
         else { return nil }

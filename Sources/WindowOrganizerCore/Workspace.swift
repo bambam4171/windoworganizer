@@ -40,7 +40,7 @@ public func planAutomaticWorkspace(_ selection: WorkspaceSelection, windows: [Wi
     plan.gapSkipped = framed.skipped
     for (w, frame) in zip(mine, framed.frames) {
         if close(w.frame, frame) { plan.unchanged += 1 }
-        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: frame)) }
+        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: frame, area: screen.visibleFrame)) }
     }
     return plan
 }

@@ -858,6 +858,43 @@ func runUISmoke() -> Int32 {
             let after = try Data(contentsOf: layoutStore().file)
             return editor.readFailed && !editor.saveButton.isEnabled && after == corrupt
         })
+        check("two screens: a window with a minimum size wider than its tile stays inside its own screen (shots before and after)", {
+            final class Stub: WindowMover {
+                var frames: [Int: Frame]; let minimum: [Int: (Double, Double)]
+                init(_ f: [Int: Frame], _ m: [Int: (Double, Double)]) { frames = f; minimum = m }
+                func frame(of id: Int) -> Frame? { frames[id] }
+                func setFrame(_ f: Frame, of id: Int) {
+                    var g = f; if let (w, h) = minimum[id] { g.width = max(g.width, w); g.height = max(g.height, h) }; frames[id] = g
+                }
+            }
+            var left = screen; left.uuid = "L"; left.name = "Laptop"; left.frame = Frame(x: 0, y: 0, width: 1200, height: 800); left.visibleFrame = Frame(x: 0, y: 25, width: 1200, height: 775)
+            var right = screen; right.uuid = "R"; right.name = "Display"; right.frame = Frame(x: 1200, y: 0, width: 1200, height: 800); right.visibleFrame = Frame(x: 1200, y: 25, width: 1200, height: 775)
+            let tile = Frame(x: 600, y: 25, width: 600, height: 775)
+            let move = Move(windowID: 1, from: Frame(x: 100, y: 100, width: 400, height: 300), to: tile, area: left.visibleFrame)
+            let mover = Stub([1: move.from, 2: Frame(x: 1300, y: 100, width: 500, height: 400)], [1: (900, 500)])
+            // What the old apply left behind: the window at its tile origin with its minimum size.
+            let before = Frame(x: tile.x, y: tile.y, width: 900, height: 775)
+            let r = applyPlan(Plan(moves: [move], skipped: [], unchanged: 0), mover: mover)
+            guard let after = mover.frame(of: 1), after.isInside(left.visibleFrame), r.shiftedIDs == [1], !before.isInside(left.visibleFrame) else { return false }
+            let line = ResultLine.restored(r, shifted: ["Editor"], desktop: 1, at: "08:00")
+            guard line.contains("moved inside the screen: Editor") else { return false }
+            for (name, f) in [("before", before), ("after", after)] {
+                let box = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 250)); box.wantsLayer = true
+                box.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+                let views = [left, right].enumerated().map { i, s -> ScreenPreview in
+                    let v = ScreenPreview(frame: NSRect(x: 10 + i * 490, y: 0, width: 480, height: 250)); v.screen = s
+                    v.windows = i == 0 ? [PreviewWindow(frame: f, title: "Editor", bundleID: "editor")]
+                                       : [PreviewWindow(frame: mover.frame(of: 2) ?? f, title: "Browser", bundleID: "browser")]
+                                         + (name == "before" ? [PreviewWindow(frame: f, title: "Editor (hangs over)", bundleID: "editor")] : [])
+                    box.addSubview(v); return v
+                }
+                _ = views
+                guard let bitmap = box.bitmapImageRepForCachingDisplay(in: box.bounds) else { return false }
+                box.cacheDisplay(in: box.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("offscreen-\(name).png"))
+            }
+            return true
+        })
         check("no check reached the real launcher, and the real launcher refuses to open an app under a test state dir", {
             var outcome: LaunchOutcome?
             liveLaunch("com.apple.mail") { outcome = $0 }
