@@ -6,10 +6,15 @@ public struct Move: Equatable, Sendable {
     public var windowID: Int
     public var from: Frame
     public var to: Frame
+    /// The visible frame of the target screen: where the window must end up whatever size the app insists on (WO-OFFSCREEN).
+    /// Context, not identity: two moves of the same window to the same frame are equal.
+    public var area: Frame?
 
-    public init(windowID: Int, from: Frame, to: Frame) {
-        self.windowID = windowID; self.from = from; self.to = to
+    public init(windowID: Int, from: Frame, to: Frame, area: Frame? = nil) {
+        self.windowID = windowID; self.from = from; self.to = to; self.area = area
     }
+
+    public static func == (a: Move, b: Move) -> Bool { a.windowID == b.windowID && a.from == b.from && a.to == b.to }
 }
 
 public struct Plan: Equatable, Sendable {
@@ -48,7 +53,7 @@ public func planSnapshot(_ arrangement: ScreenArrangement, windows: [WindowInfo]
         let exact = place.screenUUID == screen.uuid && place.visibleFrame == screen.visibleFrame
         let target = exact ? place.pixel : place.fraction.frame(in: screen.visibleFrame).contained(in: screen.visibleFrame)
         if close(w.frame, target) { plan.unchanged += 1 }
-        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
+        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target, area: screen.visibleFrame)) }
     }
     return plan
 }

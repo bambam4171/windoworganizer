@@ -63,6 +63,7 @@ public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [Scr
     var plan = Plan(moves: [], skipped: [], unchanged: 0)
     // Every (window, target) pair is collected first, so the gap can be applied per screen before anything is compared.
     var wanted: [(screen: String, window: WindowInfo, target: Frame)] = []
+    let areas = Dictionary(screens.map { ($0.uuid, $0.visibleFrame) }, uniquingKeysWith: { a, _ in a })
     for ((place, screen), window) in zip(places, match.assigned) {
         guard let w = window else { plan.skipped.append(place.matcher); continue }
         let exact = place.screenUUID == screen.uuid && place.visibleFrame == screen.visibleFrame
@@ -107,7 +108,7 @@ public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [Scr
     for i in wanted.indices {
         let w = wanted[i].window, target = gapped[i] ?? wanted[i].target
         if close(w.frame, target) { plan.unchanged += 1 }
-        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
+        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target, area: areas[wanted[i].screen])) }
     }
     return plan
 }
@@ -158,10 +159,12 @@ public struct ApplyResult: Equatable, Sendable {
     public var notOpen: Int
     /// Moves not made because the desktop or screen changed while the plan ran.
     public var cancelled: Int
+    /// Windows that kept a larger size and were moved back inside their screen (they overlap a neighbour); also counted in keptMinimum.
+    public var shiftedIDs: [Int]
 
-    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int, cancelled: Int = 0) {
+    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int, cancelled: Int = 0, shiftedIDs: [Int] = []) {
         self.placed = placed; self.keptMinimum = keptMinimum; self.failed = failed
-        self.unchanged = unchanged; self.notOpen = notOpen; self.cancelled = cancelled
+        self.unchanged = unchanged; self.notOpen = notOpen; self.cancelled = cancelled; self.shiftedIDs = shiftedIDs
     }
 }
 
@@ -188,7 +191,7 @@ public func applyPlan(_ plan: Plan, mover: WindowMover, stillValid: () -> Bool =
 
 /// The menu's last-result line (plan §4): what happened, on which desktop, when.
 public enum ResultLine {
-    public static func restored(_ r: ApplyResult, starting: [String] = [], desktop: Int?, at time: String) -> String {
+    public static func restored(_ r: ApplyResult, starting: [String] = [], shifted: [String] = [], desktop: Int?, at time: String) -> String {
         if r.cancelled > 0 { return "Stopped: the desktop changed. Placed \(r.placed + r.keptMinimum), \(r.cancelled) left as they were · \(time)" }
         let inPlace = r.placed + r.unchanged
         var parts: [String] = []
