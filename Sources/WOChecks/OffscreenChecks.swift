@@ -71,6 +71,12 @@ let offscreenChecks: [(String, @Sendable () throws -> Void)] = [
         try expectEqual(r.shiftedIDs, [])
         try expectEqual(mover.sets.count, 2)
     }),
+    ("isInside allows 1 pt of rounding and no more", {
+        let area = Frame(x: 0, y: 25, width: 1200, height: 775)
+        try expect(Frame(x: 1, y: 25, width: 1200, height: 775).isInside(area), "1 pt over the right edge is rounding")
+        try expect(!Frame(x: 20, y: 25, width: 1200, height: 775).isInside(area), "20 pt over the right edge is outside")
+        try expect(!Frame(x: -20, y: 25, width: 400, height: 300).isInside(area), "20 pt over the left edge is outside")
+    }),
     ("a move without an area keeps the old behaviour: kept its minimum size, no shift", {
         let (w1, w2, p) = twoColumns()
         let plan = Plan(moves: p.moves.map { Move(windowID: $0.windowID, from: $0.from, to: $0.to) }, skipped: [], unchanged: 0)
