@@ -442,8 +442,9 @@ func runUISmoke() -> Int32 {
             return reloaded && here && !other && otherOff && backOn && cleared
         })
         check("a sorted preset reads in name order", {
-            let named = [("Safari", 1), ("Mail", 2), ("Terminal", 3), ("Calendar", 4)].map { name, id in
-                WindowInfo(windowID: id, bundleID: "com.x.\(name)", title: "", frame: w.frame, screenUUID: screen.uuid, order: id, appName: name)
+            let names: [(String, Int)] = [("Safari", 1), ("Mail", 2), ("Terminal", 3), ("Notes", 4)]
+            let named = names.map { name, id in
+                WindowInfo(windowID: id, bundleID: "com.apple.\(name)", title: "", frame: w.frame, screenUUID: screen.uuid, order: id, appName: name)
             }
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick(); editor.previewMode.selectItem(at: 0)
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: named), Listing()) }
@@ -452,13 +453,17 @@ func runUISmoke() -> Int32 {
             let plain = editor.manualDraft?.map(\.windowID) == [1, 2, 3, 4] && !editor.result.stringValue.contains("sorted by name")
             editor.sortSwitch.state = .on; editor.stagePreset(button)
             let draft = editor.manualDraft ?? []
-            let ordered = draft.map(\.windowID) == [4, 2, 1, 3] && editor.result.stringValue.contains("sorted by name")
+            let ordered = draft.map(\.windowID) == [2, 4, 1, 3] && editor.result.stringValue.contains("sorted by name")
             let reading = zip(draft, draft.dropFirst()).allSatisfy { ($0.frame.y, $0.frame.x) < ($1.frame.y, $1.frame.x) }
             for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 editor.window.appearance = NSAppearance(named: look)
                 editor.window.contentView?.layoutSubtreeIfNeeded()
                 guard let content = editor.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return false }
+                // Offscreen, the window background is not painted: give the content view the appearance's own background.
+                content.wantsLayer = true
+                editor.window.effectiveAppearance.performAsCurrentDrawingAppearance { content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
                 content.cacheDisplay(in: content.bounds, to: bitmap)
+                content.layer?.backgroundColor = nil
                 try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("sort-\(name).png"))
             }
             editor.window.appearance = nil
