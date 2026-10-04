@@ -164,14 +164,18 @@ public struct Layouts: Codable, Equatable, Sendable {
     public var setups: [String: [String: [String: ScreenArrangement]]]
     /// App rules (S7), outside the setups: a rule applies in every setup where its screen is connected. One per app.
     public private(set) var rules: [AppRule]
+    /// Gap and the other arrange settings (WINDOW-GAP S1): desktop number → screen UUID. Outside the setups like the
+    /// rules, so a screen keeps them with or without the other displays, and removing a setup never drops them.
+    public private(set) var arrange: [String: [String: ArrangeSettings]]
 
     public init() {
         schema = Layouts.currentSchema
         setups = [:]
         rules = []
+        arrange = [:]
     }
 
-    private enum CodingKeys: String, CodingKey { case schema, setups, rules }
+    private enum CodingKeys: String, CodingKey { case schema, setups, rules, arrange }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -182,6 +186,7 @@ public struct Layouts: Codable, Equatable, Sendable {
         schema = Self.currentSchema
         setups = try c.decode([String: [String: [String: ScreenArrangement]]].self, forKey: .setups)
         rules = try c.decodeIfPresent([AppRule].self, forKey: .rules) ?? []
+        arrange = try c.decodeIfPresent([String: [String: ArrangeSettings]].self, forKey: .arrange) ?? [:]
     }
 
     /// Without rules the file is exactly as before S7.
@@ -190,6 +195,7 @@ public struct Layouts: Codable, Equatable, Sendable {
         try c.encode(schema, forKey: .schema)
         try c.encode(setups, forKey: .setups)
         if !rules.isEmpty { try c.encode(rules, forKey: .rules) }
+        if !arrange.isEmpty { try c.encode(arrange, forKey: .arrange) }
     }
 
     /// Adds the rule, or replaces the one its app already has, in place.
@@ -218,5 +224,19 @@ public struct Layouts: Codable, Equatable, Sendable {
         setups[setup.key]?[d]?[screen] = nil
         if setups[setup.key]?[d]?.isEmpty == true { setups[setup.key]?[d] = nil }
         if setups[setup.key]?.isEmpty == true { setups[setup.key] = nil }
+    }
+}
+
+extension Layouts {
+    /// The settings of one desktop of one screen; the defaults when there is no entry.
+    public func arrangeSettings(desktop: Int, screen: String) -> ArrangeSettings {
+        arrange[String(desktop)]?[screen] ?? ArrangeSettings()
+    }
+
+    /// Stores the settings; an all-default record drops its entry, and a desktop left empty drops too.
+    public mutating func setArrangeSettings(_ settings: ArrangeSettings, desktop: Int, screen: String) {
+        let d = String(desktop)
+        arrange[d, default: [:]][screen] = settings.isDefault ? nil : settings
+        if arrange[d]?.isEmpty == true { arrange[d] = nil }
     }
 }

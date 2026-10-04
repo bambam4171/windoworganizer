@@ -20,9 +20,11 @@ public struct Plan: Equatable, Sendable {
     public var unchanged: Int
     /// The window IDs tiled together in each zone, in tile order (S6): a new window re-tiles its own zone only.
     public var tiles: [[Int]]
+    /// A gap was set, but a screen had no room for it, so that screen was left without one.
+    public var gapSkipped: Bool
 
-    public init(moves: [Move], skipped: [Matcher], unchanged: Int, tiles: [[Int]] = []) {
-        self.moves = moves; self.skipped = skipped; self.unchanged = unchanged; self.tiles = tiles
+    public init(moves: [Move], skipped: [Matcher], unchanged: Int, tiles: [[Int]] = [], gapSkipped: Bool = false) {
+        self.moves = moves; self.skipped = skipped; self.unchanged = unchanged; self.tiles = tiles; self.gapSkipped = gapSkipped
     }
 }
 
