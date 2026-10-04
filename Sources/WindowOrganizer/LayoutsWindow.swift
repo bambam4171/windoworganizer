@@ -324,12 +324,14 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     @objc func resetDraft() { manualDraft = nil; draftContext = nil; result.stringValue = ""; refreshLivePreview(); refreshWorkspaceStatus() }
     @objc func applyAndSave() {
         guard let draft = manualDraft else { saveCurrentArrangement(); previewMode.selectItem(at: 0); updatePreview(); refreshWorkspaceStatus(); return }
+        guard !advancedPending else {
+            result.stringValue = "Not applied: Advanced has unsaved changes for this desktop. Save or discard them first."; return
+        }
         do {
             let (selection, report, listing, context) = try workspaceSnapshot()
             guard context == draftContext, let screen else { throw WorkspaceActionError(message: "Your screen or desktop changed. Return to it or Reset the preview.") }
             let actual = report.windows.filter { $0.screenUUID == selection.screenUUID }
             guard Set(actual.map(\.windowID)) == Set(draft.map(\.windowID)) else { throw WorkspaceActionError(message: "The open windows changed. Reset to refresh them before arranging.") }
-            var fresh = try layoutStore().load()
             let moves = draft.compactMap { target -> Move? in
                 guard let source = actual.first(where: { $0.windowID == target.windowID }), source.frame != target.frame else { return nil }
                 return Move(windowID: source.windowID, from: source.frame, to: target.frame)
@@ -339,12 +341,17 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             let (_, after, _, afterContext) = try workspaceSnapshot()
             guard afterContext == context, Set(after.windows.filter { $0.screenUUID == selection.screenUUID }.map(\.windowID)) == Set(draft.map(\.windowID)) else { throw WorkspaceActionError(message: "The desktop changed before saving. Return and try again.") }
             let captured = try captureWorkspace(selection, windows: after.windows, screens: context.screens, desktops: context.desktops)
-            fresh.set(captured, setup: ScreenSetup(screens: context.screens), desktop: selection.desktop, screen: selection.screenUUID)
             // An explicit arrangement replaces conflicting rules only on this screen and desktop.
-            let apps = Set(draft.map(\.bundleID))
-            for rule in fresh.rules where rule.screen == selection.screenUUID && rule.desktop == selection.desktop && apps.contains(rule.bundleID) { fresh.removeRule(rule.bundleID) }
-            try layoutStore().save(fresh)
-            manualDraft = nil; draftContext = nil; pick(); previewMode.selectItem(at: 0); updatePreview()
+            try persist(desktop: selection.desktop, screen: selection.screenUUID, removingRulesFor: Set(draft.map(\.bundleID))) {
+                $0.set(captured, setup: ScreenSetup(screens: context.screens), desktop: selection.desktop, screen: selection.screenUUID)
+            }
+            // Only what was written is cleared; Advanced has no pending edit here (guarded above).
+            manualDraft = nil; draftContext = nil
+            if case .snapshot(let ps) = captured.kind { placements = ps }
+            loadedPlacements = placements; loadedMode = 0; mode.selectItem(at: 0)
+            refreshSnapshotRows(); refresh()
+            previewMode.selectItem(at: 0); updatePreview()
+            assert(unsaved.isEmpty)
             result.stringValue = "✓ Layout saved · \(screen.name), \(desktopName)" + (applied.keptMinimum > 0 ? " · Some apps kept their minimum size." : "")
             refreshWorkspaceStatus()
         } catch { result.stringValue = "Not saved: \(error)" }
@@ -378,7 +385,17 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
 
     var desktopNumber: Int { screen.flatMap { spaces[$0.uuid] }.map { $0 > 0 ? desktopPopUp.indexOfSelectedItem + 1 : 0 } ?? 0 }
-    var dirty: Bool { manualDraft != nil || capturedDraft || !ruleEdits.isEmpty || mode.indexOfSelectedItem != loadedMode || (canvas.editor?.zones ?? []) != loadedZones || placements != loadedPlacements }
+    /// An Advanced arrangement edit (mode, zones, snapshot rows or a capture) not yet written.
+    var advancedPending: Bool { capturedDraft || mode.indexOfSelectedItem != loadedMode || (canvas.editor?.zones ?? []) != loadedZones || placements != loadedPlacements }
+    /// Everything on this window not yet written to disk; the one source for the dirty flag and the result line.
+    var unsaved: [String] {
+        var u: [String] = []
+        if manualDraft != nil { u.append("canvas preview") }
+        if advancedPending { u.append("Advanced arrangement") }
+        if !ruleEdits.isEmpty { u.append("app rules") }
+        return u
+    }
+    var dirty: Bool { !unsaved.isEmpty }
     var desktopName: String { desktopNumber == 0 ? "Desktop unknown (manual)" : "Desktop \(desktopNumber)" }
     var selection: WorkspaceSelection? { screen.map { WorkspaceSelection(screenUUID: $0.uuid, desktop: desktopNumber) } }
 
@@ -610,30 +627,42 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
     @objc func deleteZone() { canvas.editor?.deleteSelected(); refresh() }
 
+    /// The one write path: loads fresh (another Remember may have saved), applies the arrangement edit, applies the pending
+    /// rule edits, drops rules the arrangement replaces on this screen and desktop, and saves once.
+    func persist(desktop: Int, screen screenUUID: String, removingRulesFor apps: Set<String> = [], arrangement edit: (inout Layouts) -> Void) throws {
+        let store = layoutStore()
+        var fresh = try store.load()
+        edit(&fresh)
+        for (app, rule) in ruleEdits { if let rule { fresh.setRule(rule) } else { fresh.removeRule(app) } }
+        for rule in fresh.rules where rule.screen == screenUUID && rule.desktop == desktop && apps.contains(rule.bundleID) { fresh.removeRule(rule.bundleID) }
+        try FileManager.default.createDirectory(at: store.file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try store.save(fresh)
+        layouts = fresh
+        ruleEdits = [:]
+    }
+
     @objc func save() {
         window.makeFirstResponder(nil)
         guard let editor = canvas.editor, let screen, !readFailed else { return }
         guard ScreenSetup(screens: contextProvider().screens).key == loadedSetup else {
             result.stringValue = "Screen setup changed. Return to the original setup to save this draft."; return
         }
-        let store = layoutStore()
+        guard manualDraft == nil else {
+            result.stringValue = "Not saved: the canvas preview is not applied yet. Apply & Save it or Reset it first."; return
+        }
         do {
-            var fresh = try store.load()   // another Remember may have saved since the window opened
             let setup = ScreenSetup(screens: screens)
-            if capturedDraft || mode.indexOfSelectedItem != loadedMode || editor.zones != loadedZones || placements != loadedPlacements {
-                switch mode.indexOfSelectedItem {
+            let writeArrangement = advancedPending
+            try persist(desktop: desktopNumber, screen: screen.uuid) { fresh in
+                guard writeArrangement else { return }
+                switch self.mode.indexOfSelectedItem {
                 case 1: editor.save(into: &fresh)
-                case 2: fresh.set(ScreenArrangement(kind: .autoTile), setup: setup, desktop: desktopNumber, screen: screen.uuid)
-                default: fresh.set(ScreenArrangement(kind: .snapshot(placements)), setup: setup, desktop: desktopNumber, screen: screen.uuid)
+                case 2: fresh.set(ScreenArrangement(kind: .autoTile), setup: setup, desktop: self.desktopNumber, screen: screen.uuid)
+                default: fresh.set(ScreenArrangement(kind: .snapshot(self.placements)), setup: setup, desktop: self.desktopNumber, screen: screen.uuid)
                 }
             }
-            for (app, rule) in ruleEdits {
-                if let rule { fresh.setRule(rule) } else { fresh.removeRule(app) }
-            }
-            try FileManager.default.createDirectory(at: store.file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try store.save(fresh)
-            layouts = fresh
-            ruleEdits = [:]; capturedDraft = false; loadedZones = editor.zones; loadedPlacements = placements; loadedMode = mode.indexOfSelectedItem
+            capturedDraft = false; loadedZones = editor.zones; loadedPlacements = placements; loadedMode = mode.indexOfSelectedItem
+            assert(unsaved.isEmpty)
             result.stringValue = "Saved \(screen.name) · \(desktopName). Switch to the next screen or desktop when ready."
             refresh()
         } catch {

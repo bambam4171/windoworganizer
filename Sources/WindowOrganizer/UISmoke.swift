@@ -237,6 +237,45 @@ func runUISmoke() -> Int32 {
             guard case .snapshot(let positions)? = stored.arrangement(setup: setup, desktop: 2, screen: screen.uuid)?.kind else { return false }
             return moved == [1] && !editor.dirty && positions.first?.pixel == target && stored.rules.map(\.bundleID) == ["other"] && stored.arrangement(setup: setup, desktop: 1, screen: screen.uuid) == snapshot
         })
+        check("a canvas draft blocks an Advanced Save and writes nothing", {
+            editor.pick(); editor.previewMode.selectItem(at: 0); editor.refreshLivePreview()
+            let before = try Data(contentsOf: layoutStore().file)
+            editor.stageWindow(w.windowID, frame: Frame(x: 210, y: 90, width: 500, height: 400))
+            editor.mode.selectItem(at: 2); editor.save()
+            let after = try Data(contentsOf: layoutStore().file)
+            return after == before && editor.manualDraft != nil && editor.unsaved.contains("canvas preview")
+                && editor.result.stringValue == "Not saved: the canvas preview is not applied yet. Apply & Save it or Reset it first."
+        })
+        check("Apply & Save keeps pending rule edits", {
+            editor.pick(); editor.previewMode.selectItem(at: 0); editor.refreshLivePreview()
+            var current = w
+            editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [current]), Listing()) }
+            editor.applyProvider = { plan, _, _ in
+                if let frame = plan.moves.first?.to { current.frame = frame }
+                return ApplyResult(placed: plan.moves.count, keptMinimum: 0, failed: 0, unchanged: plan.unchanged, notOpen: 0)
+            }
+            editor.ruleEdits["kept.rule"] = AppRule(bundleID: "kept.rule", desktop: 2, screen: screen.uuid, area: AppRule.full)
+            editor.stageWindow(w.windowID, frame: Frame(x: 120, y: 95, width: 640, height: 520)); editor.applyAndSave()
+            let stored = try layoutStore().load()
+            return stored.rules.map(\.bundleID).contains("kept.rule") && editor.ruleEdits.isEmpty && !editor.dirty
+        })
+        check("Apply & Save refuses while Advanced edits are pending", {
+            editor.pick(); editor.previewMode.selectItem(at: 0); editor.refreshLivePreview(); moved = []
+            let before = try Data(contentsOf: layoutStore().file)
+            editor.mode.selectItem(at: 2)
+            editor.stageWindow(w.windowID, frame: Frame(x: 140, y: 100, width: 600, height: 480)); editor.applyAndSave()
+            let after = try Data(contentsOf: layoutStore().file)
+            return moved.isEmpty && after == before && editor.manualDraft != nil
+                && editor.result.stringValue == "Not applied: Advanced has unsaved changes for this desktop. Save or discard them first."
+        })
+        check("dirty and the result line agree", {
+            editor.pick(); editor.previewMode.selectItem(at: 0); editor.refreshLivePreview()
+            var agree = editor.dirty == !editor.unsaved.isEmpty && !editor.dirty
+            editor.ruleEdits["agree.rule"] = AppRule(bundleID: "agree.rule", desktop: 2, screen: screen.uuid, area: AppRule.full)
+            agree = agree && editor.dirty && editor.unsaved == ["app rules"]
+            editor.save()
+            return agree && !editor.dirty && editor.unsaved.isEmpty && !editor.result.stringValue.hasPrefix("Not")
+        })
         check("a changed set of open windows blocks stale preview application", {
             editor.pick(); editor.previewMode.selectItem(at: 0); editor.refreshLivePreview()
             editor.stageWindow(w.windowID, frame: screen.visibleFrame)
