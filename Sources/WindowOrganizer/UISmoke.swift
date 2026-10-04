@@ -455,17 +455,24 @@ func runUISmoke() -> Int32 {
             let draft = editor.manualDraft ?? []
             let ordered = draft.map(\.windowID) == [2, 4, 1, 3] && editor.result.stringValue.contains("sorted by name")
             let reading = zip(draft, draft.dropFirst()).allSatisfy { ($0.frame.y, $0.frame.x) < ($1.frame.y, $1.frame.x) }
-            for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-                editor.window.appearance = NSAppearance(named: look)
-                editor.window.contentView?.layoutSubtreeIfNeeded()
-                guard let content = editor.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return false }
-                // Offscreen, the window background is not painted: give the content view the appearance's own background.
-                content.wantsLayer = true
-                editor.window.effectiveAppearance.performAsCurrentDrawingAppearance { content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
-                content.cacheDisplay(in: content.bounds, to: bitmap)
-                content.layer?.backgroundColor = nil
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("sort-\(name).png"))
+            @MainActor func shoot(_ prefix: String) throws -> Bool {
+                for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                    editor.window.appearance = NSAppearance(named: look)
+                    editor.window.contentView?.layoutSubtreeIfNeeded()
+                    guard let content = editor.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return false }
+                    // Offscreen, the window background is not painted: give the content view the appearance's own background.
+                    content.wantsLayer = true
+                    editor.window.effectiveAppearance.performAsCurrentDrawingAppearance { content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+                    content.cacheDisplay(in: content.bounds, to: bitmap)
+                    content.layer?.backgroundColor = nil
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("sort-\(prefix)\(name).png"))
+                }
+                return true
             }
+            editor.sortSwitch.state = .off; editor.stagePreset(button)
+            guard try shoot("before-") else { return false }
+            editor.sortSwitch.state = .on; editor.stagePreset(button)
+            guard try shoot("") else { return false }
             editor.window.appearance = nil
             editor.sortSwitch.state = .off; editor.resetDraft()
             editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
