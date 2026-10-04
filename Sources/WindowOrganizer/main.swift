@@ -138,7 +138,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         if case .start = event { permitted = Preferences.restoreAtLaunch }
         else { permitted = Preferences.restoreOnScreens }
         switch action {
-        case .none, .placeWindow: break
+        case .none, .placeWindow, .autoCheck: break  // .autoCheck is wired in AUTO-MODE S2
         case .arrange: if permitted, let line = restoreNow(automatic: true) { lastResult = line }
         case .settle: scheduleScreens()
         }
