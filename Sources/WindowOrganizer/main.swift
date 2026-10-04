@@ -9,6 +9,7 @@ func snapshot(screenUUID: String? = nil) -> (ListReport, Listing) {
 }
 
 if CommandLine.arguments.contains("--ui-smoke") { exit(runUISmoke()) }
+if CommandLine.arguments.contains("--migrate") { exit(runMigrate(arguments: CommandLine.arguments, environment: ProcessInfo.processInfo.environment)) }
 
 if CommandLine.arguments.contains("--list") || CommandLine.arguments.contains("--diagnostics") {
     let (report, listing) = snapshot()
