@@ -12,7 +12,7 @@ enum Preferences {
     static var restoreOnScreens: Bool { defaults.bool(forKey: "restoreOnScreens") }
     static var arrangeNewWindows: Bool { defaults.bool(forKey: "arrangeNewWindows") }
     /// Start-missing-apps switches (WO-LAUNCH-MISSING S2): unset means the trigger's default, never `defaults.bool`.
-    static func starts(_ trigger: LaunchTrigger) -> Bool {
+    static func startsMissing(_ trigger: LaunchTrigger) -> Bool {
         defaults.object(forKey: "startMissing." + trigger.rawValue) as? Bool ?? trigger.defaultOn
     }
     static var key: String { defaults.string(forKey: "restoreKey") ?? "r" }
@@ -48,13 +48,13 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
             let b = NSButton(checkboxWithTitle: text, target: self, action: #selector(toggle(_:)))
             b.identifier = NSUserInterfaceItemIdentifier(key); toggles.append(b)
         }
-        let startItems: [(LaunchTrigger, String)] = [(.restore, "When I restore the arrangement"), (.applySave, "When I use Apply & Save"),
-                                                     (.screenPlug, "When a display is plugged in"), (.login, "When Window Organizer opens")]
+        let startItems: [(LaunchTrigger, String)] = [(.restore, "When I restore a layout"), (.applySave, "When I click Apply & Save in the editor"),
+                                                     (.screenPlug, "When a display is connected"), (.login, "When Window Organizer opens (for example at login)")]
         for (trigger, text) in startItems {
             let b = NSButton(checkboxWithTitle: text, target: self, action: #selector(toggleStart(_:)))
             b.identifier = NSUserInterfaceItemIdentifier("startMissing." + trigger.rawValue); startToggles.append(b)
         }
-        let startNote = NSTextField(wrappingLabelWithString: "Apps in a layout that are not running are opened, and their windows are placed. Each switch is separate.")
+        let startNote = NSTextField(wrappingLabelWithString: "Only apps from a saved layout are started. An app that is already running is never reopened.")
         startNote.textColor = .secondaryLabelColor; startNote.font = .systemFont(ofSize: 11)
         shortcut.addItems(withTitles: HotKey.keyCodes.keys.sorted().map { "⌃⌥⌘" + $0.uppercased() })
         shortcut.target = self; shortcut.action = #selector(changeShortcut)
@@ -82,7 +82,14 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         permission.stringValue = Permission.trusted ? "✓ Accessibility access is enabled." : "Enable Window Organizer under Privacy & Security → Accessibility to read and move windows."
         permission.textColor = Permission.trusted ? .systemGreen : .labelColor
         for b in toggles { b.state = Preferences.defaults.bool(forKey: b.identifier!.rawValue) ? .on : .off }
-        for b in startToggles { b.state = Preferences.defaults.object(forKey: b.identifier!.rawValue) as? Bool ?? (b.identifier!.rawValue != "startMissing.login") ? .on : .off }
+        for b in startToggles {
+            guard let t = LaunchTrigger(rawValue: String(b.identifier!.rawValue.dropFirst("startMissing.".count))) else { continue }
+            b.state = Preferences.startsMissing(t) ? .on : .off
+            let parent: (key: String, name: String)? = t == .screenPlug ? ("restoreOnScreens", "Restore after displays change, and on pending desktops")
+                : t == .login ? ("restoreAtLaunch", "Restore when this app opens") : nil
+            b.isEnabled = parent.map { Preferences.defaults.bool(forKey: $0.key) } ?? true
+            b.toolTip = parent.map { "Needs the switch “\($0.name)”." }
+        }
         shortcut.selectItem(withTitle: Preferences.shortcut.display)
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }

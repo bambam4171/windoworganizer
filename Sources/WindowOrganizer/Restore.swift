@@ -50,6 +50,9 @@ struct WorkspaceProviders {
     var snapshot: () -> (ListReport, Listing) = { WindowOrganizer.snapshot() }
     var mover: (Listing) -> WindowMover = { AXMover(elements: $0.elements) }
     var store: () -> LayoutStore = { layoutStore() }
+    var running: () -> Set<String> = { liveRunning() }
+    var launch: (String, @escaping @MainActor (LaunchOutcome) -> Void) -> Void = { liveLaunch($0, $1) }
+    var appName: (String) -> String = { liveAppName($0) }
     static var live: WorkspaceProviders { WorkspaceProviders() }
 }
 
@@ -128,14 +131,14 @@ final class RestoreSession {
     private var setup = ""
     private var desktops: [String: Int] = [:]
     var canUndo: Bool { !entries.isEmpty }
-    func apply(_ plan: Plan, listing: Listing, context: WorkspaceContext, mover: WindowMover? = nil, stillValid: (() -> Bool)? = nil) -> ApplyResult {
+    func apply(_ plan: Plan, listing: Listing, context: WorkspaceContext, mover: WindowMover? = nil, stillValid: (() -> Bool)? = nil, recordUndo: Bool = true) -> ApplyResult {
         let mover = mover ?? AXMover(elements: listing.elements)
         let result = applyPlan(plan, mover: mover, stillValid: stillValid ?? { WorkspaceContext.live() == context })
         let changed = plan.moves.compactMap { move -> (Move, AXUIElement, Frame)? in
             guard let element = listing.elements[move.windowID], let after = axFrame(element), after != move.from else { return nil }
             return (move, element, after)
         }
-        if !changed.isEmpty {
+        if recordUndo, !changed.isEmpty {
             entries = changed; setup = ScreenSetup(screens: context.screens).key; desktops = context.desktops
         }
         return result
