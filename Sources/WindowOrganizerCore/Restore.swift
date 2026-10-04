@@ -13,12 +13,16 @@ public func currentDesktops(_ displays: [DisplaySpaces]) -> [String: Int] {
 }
 
 /// Stores one snapshot per screen under the current setup, that screen's desktop and the screen. A screen whose desktop is
-/// unknown is skipped; every other arrangement stays as it was. Returns the number of windows remembered.
+/// unknown is skipped, and so is one with zones (drawn in the editor, never overwritten by a snapshot); every other
+/// arrangement stays as it was. Returns the number of windows remembered.
 public func rememberDesktop(_ layouts: inout Layouts, windows: [WindowInfo], screens: [ScreenInfo], desktops: [String: Int]) -> Int {
     let setup = ScreenSetup(screens: screens)
     var count = 0
     for screen in screens {
         guard let desktop = desktops[screen.uuid] else { continue }
+        if let kind = layouts.arrangement(setup: setup, desktop: desktop, screen: screen.uuid)?.kind {
+            switch kind { case .zones, .autoTile: continue; case .snapshot: break }
+        }
         let arrangement = remember(windows, on: screen)
         if case .snapshot(let places) = arrangement.kind { count += places.count }
         layouts.set(arrangement, setup: setup, desktop: desktop, screen: screen.uuid)
@@ -27,28 +31,109 @@ public func rememberDesktop(_ layouts: inout Layouts, windows: [WindowInfo], scr
 }
 
 /// The moves that put the current desktop back as remembered, nil when nothing is remembered for it.
-/// All screens' places are matched in one pass, so a window is never claimed by two screens.
-public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [ScreenInfo], desktops: [String: Int]) -> Plan? {
+/// All screens' places are matched in one pass, so a window is never claimed by two screens. Zones then take the
+/// windows no place claimed, screen by screen and zone by zone, and tile them.
+public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [ScreenInfo], desktops: [String: Int], scope: WorkspaceSelection? = nil) -> Plan? {
     let setup = ScreenSetup(screens: screens)
+    let eligibleScreens = scope.map { selected in screens.filter { $0.uuid == selected.screenUUID && desktops[$0.uuid] == selected.desktop } } ?? screens
+    let windows = scope.map { selected in windows.filter { $0.screenUUID == selected.screenUUID } } ?? windows
     var places: [(Placement, ScreenInfo)] = []
+    var zoned: [(Zone, ScreenInfo)] = []
+    var automatic: [ScreenInfo] = []
     var found = false
-    for screen in screens {
+    for screen in eligibleScreens {
         guard let desktop = desktops[screen.uuid],
               let arrangement = layouts.arrangement(setup: setup, desktop: desktop, screen: screen.uuid) else { continue }
         found = true
-        if case .snapshot(let ps) = arrangement.kind { places += ps.map { ($0, screen) } }
+        switch arrangement.kind {
+        case .snapshot(let ps): places += ps.map { ($0, screen) }
+        case .zones(let zs): zoned += zs.map { ($0, screen) }
+        case .autoTile: automatic.append(screen)
+        }
     }
-    guard found else { return nil }
-    let match = matchWindows(places.map(\.0.matcher), windows)
+    // App rules win (plan §1): an active rule's app leaves the snapshot and the zones to the rule.
+    let active = layouts.rules.compactMap { rule in
+        eligibleScreens.first { $0.uuid == rule.screen && desktops[$0.uuid] == rule.desktop }.map { (rule, $0) }
+    }
+    guard found || !active.isEmpty else { return nil }
+    let ruled = Set(active.map(\.0.bundleID))
+    places.removeAll { ruled.contains($0.0.matcher.bundleID) }
+    let free = windows.filter { !ruled.contains($0.bundleID) }
+    let match = matchWindows(places.map(\.0.matcher), free)
     var plan = Plan(moves: [], skipped: [], unchanged: 0)
     for ((place, screen), window) in zip(places, match.assigned) {
         guard let w = window else { plan.skipped.append(place.matcher); continue }
         let exact = place.screenUUID == screen.uuid && place.visibleFrame == screen.visibleFrame
-        let target = exact ? place.pixel : place.fraction.frame(in: screen.visibleFrame)
+        let target = exact ? place.pixel : place.fraction.frame(in: screen.visibleFrame).contained(in: screen.visibleFrame)
         if close(w.frame, target) { plan.unchanged += 1 }
         else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
     }
+    var claimed = Set(match.assigned.compactMap { $0?.windowID })
+    for (zone, screen) in zoned {
+        var mine: [WindowInfo] = []
+        for member in zone.members {
+            let taken = free.filter { !claimed.contains($0.windowID) && member.matches($0) }.sorted { $0.order < $1.order }
+            mine += taken
+            claimed.formUnion(taken.map(\.windowID))
+        }
+        plan.tileIn(mine, zone.rect.frame(in: screen.visibleFrame))
+    }
+    for screen in automatic {
+        let mine = free.filter { $0.screenUUID == screen.uuid && !claimed.contains($0.windowID) }
+            .sorted { ($0.bundleID, $0.order, $0.windowID) < ($1.bundleID, $1.order, $1.windowID) }
+        claimed.formUnion(mine.map(\.windowID))
+        plan.tiles.append(mine.map(\.windowID))
+        for (w, target) in zip(mine, gridTile(mine.count, in: screen.visibleFrame)) {
+            if close(w.frame, target) { plan.unchanged += 1 }
+            else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
+        }
+    }
+    for (rule, screen) in active {
+        plan.tileIn(windows.filter { $0.bundleID == rule.bundleID }.sorted { $0.order < $1.order },
+                    rule.area.frame(in: screen.visibleFrame))
+    }
     return plan
+}
+
+extension Plan {
+    /// Tiles the windows inside the area as one group (zone or rule): a new window re-tiles only its group.
+    mutating func tileIn(_ ws: [WindowInfo], _ area: Frame) {
+        guard !ws.isEmpty else { return }
+        tiles.append(ws.map(\.windowID))
+        for (w, target) in zip(ws, tile(ws.count, in: area)) {
+            if close(w.frame, target) { unchanged += 1 }
+            else { moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
+        }
+    }
+}
+
+/// Splits a zone along its longer side into n equal parts. Edges are rounded once, so neighbours share them: no gap.
+public func tile(_ n: Int, in area: Frame) -> [Frame] {
+    guard n > 0, area.isValid else { return [] }
+    let across = area.width >= area.height
+    let start = across ? area.x : area.y, length = across ? area.width : area.height
+    let edges = (0...n).map { i in i == n ? start + length : (start + Double(i) * length / Double(n)).rounded() }
+    return (0..<n).map { i in
+        across ? Frame(x: edges[i], y: area.y, width: edges[i + 1] - edges[i], height: area.height)
+               : Frame(x: area.x, y: edges[i], width: area.width, height: edges[i + 1] - edges[i])
+    }
+}
+
+/// How many of the current desktop's screens have zones (kept by Remember this desktop).
+public func zoneScreens(_ layouts: Layouts, screens: [ScreenInfo], desktops: [String: Int]) -> Int {
+    let setup = ScreenSetup(screens: screens)
+    return screens.filter { s in
+        guard let d = desktops[s.uuid], case .zones? = layouts.arrangement(setup: setup, desktop: d, screen: s.uuid)?.kind
+        else { return false }
+        return true
+    }.count
+}
+
+/// A new window goes to its place and nothing else moves (plan §3): the desktop's plan cut down to that one window,
+/// or, in a zone, to that zone, which re-tiles with the new window in it.
+public func onlyWindow(_ plan: Plan, _ id: Int) -> Plan {
+    let group = Set(plan.tiles.first { $0.contains(id) } ?? [id])
+    return Plan(moves: plan.moves.filter { group.contains($0.windowID) }, skipped: [], unchanged: 0)
 }
 
 /// Moves windows. The app's is Accessibility; the checks use a fake.
@@ -75,6 +160,7 @@ public struct ApplyResult: Equatable, Sendable {
 public func applyPlan(_ plan: Plan, mover: WindowMover) -> ApplyResult {
     var r = ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: plan.unchanged, notOpen: plan.skipped.count)
     for move in plan.moves {
+        guard move.to.isValid else { r.failed += 1; continue }
         mover.setFrame(move.to, of: move.windowID)
         var now = mover.frame(of: move.windowID)
         if let f = now, close(f, move.to) { r.placed += 1; continue }
@@ -106,12 +192,23 @@ public enum ResultLine {
         return "\(name(desktop)): \(parts.joined(separator: ", ")) · \(time)"
     }
 
+    /// After a new window was placed; nil when it had no place to go (then the menu keeps its line).
+    public static func newWindow(_ r: ApplyResult, app: String, desktop: Int?, at time: String) -> String? {
+        let what: String
+        if r.placed > 0 { what = "placed" }
+        else if r.keptMinimum > 0 { what = "placed, it kept its minimum size" }
+        else if r.failed > 0 { what = "could not be moved" }
+        else { return nil }
+        return "\(name(desktop)): new \(app) window \(what) · \(time)"
+    }
+
     public static func nothingRemembered(desktop: Int?, at time: String) -> String {
         "\(name(desktop)): nothing remembered yet · \(time)"
     }
 
-    public static func remembered(windows: Int, screens: Int, desktop: Int?, at time: String) -> String {
-        "\(name(desktop)): remembered \(plural(windows, "window")) on \(plural(screens, "screen")) · \(time)"
+    public static func remembered(windows: Int, screens: Int, keptZones: Int = 0, desktop: Int?, at time: String) -> String {
+        let kept = keptZones == 0 ? "" : ", \(plural(keptZones, "screen")) \(keptZones == 1 ? "keeps its" : "keep their") zones"
+        return "\(name(desktop)): remembered \(plural(windows, "window")) on \(plural(screens, "screen"))\(kept) · \(time)"
     }
 
     private static func name(_ desktop: Int?) -> String { desktop.map { "Desktop \($0)" } ?? "Desktop unknown" }
@@ -123,11 +220,13 @@ public struct Shortcut: Equatable, Sendable {
     public var key: String
     public var display: String
 
+    public init(key: String, display: String) { self.key = key; self.display = display }
+
     public static let restore = Shortcut(key: "r", display: "⌃⌥⌘R")
 }
 
 /// Where layouts.json lives (plan §1). WO_STATE_DIR points a live check at a throwaway folder.
 public func stateDirectory(environment: [String: String], home: URL) -> URL {
     if let dir = environment["WO_STATE_DIR"], !dir.isEmpty { return URL(fileURLWithPath: dir) }
-    return home.appendingPathComponent("Library/Application Support/WindowOrganizer")
+    return home.appendingPathComponent("Library/Application Support/WindowOrganizerGPTReview")
 }

@@ -24,20 +24,29 @@ enum SkyLight {
     }
 
     /// One entry per display, its Spaces in Mission Control order. "Main" stands for the main display's UUID.
-    static func displaySpaces(mainUUID: String?) -> [DisplaySpaces] {
+    static func displaySpaces(mainUUID: String?, screenUUIDs: [String] = []) -> [DisplaySpaces] {
         guard let c = connection, let f = sym("SLSCopyManagedDisplaySpaces", ManagedSpaces.self),
               let arr = f(c)?.takeRetainedValue() as? [[String: Any]] else { return [] }
-        return arr.map { d in
+        let parsed = arr.map { d in
             let cur = ((d["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? NSNumber)?.uint64Value ?? 0
-            let all = (d["Spaces"] as? [[String: Any]] ?? []).compactMap { ($0["ManagedSpaceID"] as? NSNumber)?.uint64Value }
+            let all = (d["Spaces"] as? [[String: Any]] ?? []).filter {
+                ($0["type"] as? NSNumber)?.intValue == 0
+            }.compactMap { ($0["ManagedSpaceID"] as? NSNumber)?.uint64Value }
             var id = d["Display Identifier"] as? String ?? "?"
             if id == "Main", let mainUUID { id = mainUUID }
             return DisplaySpaces(display: id, current: cur, spaces: all)
         }
+        // With shared Spaces WindowServer reports one entry for every display.
+        if parsed.count == 1, let shared = parsed.first {
+            return (screenUUIDs.isEmpty ? [shared.display] : screenUUIDs).map {
+                DisplaySpaces(display: $0, current: shared.current, spaces: shared.spaces)
+            }
+        }
+        return parsed
     }
 
     @MainActor
     static func desktop(screens: [ScreenInfo]) -> DesktopPosition? {
-        desktopPosition(active: activeSpace(), displays: displaySpaces(mainUUID: screens.first?.uuid))
+        desktopPosition(active: activeSpace(), displays: displaySpaces(mainUUID: screens.first?.uuid, screenUUIDs: screens.map(\.uuid)))
     }
 }

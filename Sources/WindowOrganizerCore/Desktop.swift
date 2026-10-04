@@ -58,7 +58,7 @@ public func desktopPosition(active: UInt64?, displays: [DisplaySpaces]) -> Deskt
 
 public enum StatusLine {
     public static func text(trusted: Bool, desktop: DesktopPosition?, windows: Int, screens: Int) -> String {
-        if !trusted { return "Permission missing: Device Control and Data Access" }
+        if !trusted { return "Permission needed: Accessibility" }
         let where_ = desktop.map { "Desktop \($0.number)" } ?? "Desktop unknown"
         return "\(where_) · \(plural(windows, "window")) on \(plural(screens, "screen"))"
     }

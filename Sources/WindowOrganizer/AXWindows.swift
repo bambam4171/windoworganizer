@@ -2,60 +2,111 @@ import AppKit
 import ApplicationServices
 import WindowOrganizerCore
 
-// Accessibility (plan §3): lists the windows of the desktop Tom is on. AX sees only the active desktop (spike limit 1).
-
-func axAttr<T>(_ e: AXUIElement, _ name: String) -> T? {
-    var v: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success else { return nil }
-    return v as? T
+func axAttr<T>(_ element: AXUIElement, _ name: String) -> T? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+    return value as? T
 }
 
-func axFrame(_ e: AXUIElement) -> Frame? {
-    guard let p: AXValue = axAttr(e, kAXPositionAttribute), let s: AXValue = axAttr(e, kAXSizeAttribute) else { return nil }
+func axFrame(_ element: AXUIElement) -> Frame? {
+    guard let p: AXValue = axAttr(element, kAXPositionAttribute),
+          let s: AXValue = axAttr(element, kAXSizeAttribute),
+          AXValueGetType(p) == .cgPoint, AXValueGetType(s) == .cgSize else { return nil }
     var pt = CGPoint.zero, sz = CGSize.zero
-    AXValueGetValue(p, .cgPoint, &pt); AXValueGetValue(s, .cgSize, &sz)
-    return Frame(x: pt.x, y: pt.y, width: sz.width, height: sz.height)
+    guard AXValueGetValue(p, .cgPoint, &pt), AXValueGetValue(s, .cgSize, &sz) else { return nil }
+    let frame = Frame(x: pt.x, y: pt.y, width: sz.width, height: sz.height)
+    return frame.isValid ? frame : nil
 }
 
-/// The listed windows plus their AX elements by window ID, which S3 needs to move them.
 struct Listing {
     var windows: [WindowInfo] = []
     var elements: [Int: AXUIElement] = [:]
+    var warnings: [String] = []
 }
 
-/// Standard windows of regular apps on the current desktop. `order` is the app's own window order, 0 = oldest,
-/// and the window ID is the app pid × 1000 + that order: stable within one listing, which is all S1's planner needs.
+/// AXWindows alone is not a current-Space filter. Intersect with WindowServer's onscreen IDs.
+/// The optional private AX ID function is dynamically resolved; the conservative fallback requires a unique frame.
+enum WindowIdentity {
+    typealias GetID = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+    static let getID: GetID? = {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow") else { return nil }
+        return unsafeBitCast(symbol, to: GetID.self)
+    }()
+    static func id(_ element: AXUIElement) -> Int? {
+        guard let getID else { return nil }
+        var id: CGWindowID = 0
+        return getID(element, &id) == .success && id != 0 ? Int(id) : nil
+    }
+}
+
+/// Limit WindowServer identities before querying AX, so other desktops and monitors do not block this screen.
+func visibleWindows(_ info: [[String: Any]], on selected: String?, screens: [ScreenInfo]) -> [[String: Any]] {
+    info.filter { entry in
+        guard (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return false }
+        guard let selected else { return true }
+        guard let bounds = entry[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: bounds) else { return false }
+        let frame = Frame(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
+        return screenUUID(for: frame, in: screens) == selected
+    }
+}
+
 @MainActor
-func listWindows(screens: [ScreenInfo], timeoutPerApp: Float = 1.0) -> Listing {
+func listWindows(screens: [ScreenInfo], screenUUID selected: String? = nil, timeoutPerApp: Float = 0.2) -> Listing {
     var out = Listing()
-    for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-        guard let bundleID = app.bundleIdentifier, app.processIdentifier != getpid() else { continue }
+    guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        out.warnings = ["Could not identify windows on the current desktop."]; return out
+    }
+    let visible = visibleWindows(info, on: selected, screens: screens)
+    let visiblePIDs = Set(visible.compactMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value })
+    let visibleIDs = Set(visible.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.intValue })
+    let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.processIdentifier != getpid() && visiblePIDs.contains($0.processIdentifier) }
+        .sorted { $0.processIdentifier < $1.processIdentifier }
+    for app in apps {
+        guard let bundleID = app.bundleIdentifier, !app.isHidden else { continue }
         let ae = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(ae, timeoutPerApp)
-        // AX lists front to back; reversed, the oldest-opened window tends to come first.
-        let elements: [AXUIElement] = (axAttr(ae, kAXWindowsAttribute) ?? []).reversed()
-        var order = 0
-        for w in elements {
-            let fullScreen = (axAttr(w, "AXFullScreen") as NSNumber?)?.boolValue ?? false
-            let minimized = (axAttr(w, kAXMinimizedAttribute) as NSNumber?)?.boolValue ?? false
-            guard WindowFilter.counts(subrole: axAttr(w, kAXSubroleAttribute) ?? "", fullScreen: fullScreen, minimized: minimized),
-                  let frame = axFrame(w), let screen = screenUUID(for: frame, in: screens) else { continue }
-            let id = Int(app.processIdentifier) * 1000 + order
+        var raw: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(ae, kAXWindowsAttribute as CFString, &raw)
+        if error == .attributeUnsupported || error == .noValue { continue }
+        guard error == .success, let elements = raw as? [AXUIElement] else {
+            out.warnings.append("\(app.localizedName ?? bundleID) did not respond."); continue
+        }
+        let frames = elements.map(axFrame)
+        var entries: [(Int, AXUIElement, Frame)] = []
+        for (index, w) in elements.enumerated() {
+            guard WindowFilter.counts(subrole: axAttr(w, kAXSubroleAttribute) ?? "",
+                                      fullScreen: (axAttr(w, "AXFullScreen") as NSNumber?)?.boolValue ?? false,
+                                      minimized: (axAttr(w, kAXMinimizedAttribute) as NSNumber?)?.boolValue ?? false),
+                  let frame = frames[index] else { continue }
+            let id: Int?
+            if let stable = WindowIdentity.id(w) { id = visibleIDs.contains(stable) ? stable : nil }
+            else {
+                let candidates = visible.filter { d in
+                    guard (d[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == app.processIdentifier,
+                          let bounds = d[kCGWindowBounds as String] as? NSDictionary,
+                          let rect = CGRect(dictionaryRepresentation: bounds) else { return false }
+                    return abs(rect.minX - frame.x) < 1 && abs(rect.minY - frame.y) < 1 && abs(rect.width - frame.width) < 1 && abs(rect.height - frame.height) < 1
+                }
+                // Identical bounds on another Space are ambiguous without AX IDs: leave both alone.
+                id = candidates.count == 1 && frames.filter({ $0 == frame }).count == 1
+                    ? (candidates[0][kCGWindowNumber as String] as? NSNumber)?.intValue : nil
+            }
+            guard let id, out.elements[id] == nil, screenUUID(for: frame, in: screens) != nil else { continue }
+            entries.append((id, w, frame))
+        }
+        for (order, entry) in entries.sorted(by: { $0.0 < $1.0 }).enumerated() {
+            let (id, w, frame) = entry
+            guard let screen = screenUUID(for: frame, in: screens) else { continue }
             out.windows.append(WindowInfo(windowID: id, bundleID: bundleID, title: axAttr(w, kAXTitleAttribute) ?? "",
                                           frame: frame, screenUUID: screen, order: order))
             out.elements[id] = w
-            order += 1
         }
     }
     return out
 }
 
 enum Permission {
-    /// Never shows the system prompt; the menu offers the Settings page instead. (The key spelled out: the
-    /// kAXTrustedCheckOptionPrompt global is not concurrency-safe under Swift 6.)
-    static var trusted: Bool {
-        AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": false] as CFDictionary)
-    }
-
+    static var trusted: Bool { AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": false] as CFDictionary) }
     static let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
 }

@@ -126,13 +126,13 @@ let coreChecks: [(String, @Sendable () throws -> Void)] = [
     ("store: a newer schema is refused and never overwritten", {
         let dir = try tempDir()
         let file = dir.appendingPathComponent("layouts.json")
-        let newer = #"{"schema":2,"setups":{}}"#
+        let newer = "{\"schema\":\(Layouts.currentSchema + 1),\"setups\":{}}"
         try Data(newer.utf8).write(to: file)
         let store = LayoutStore(directory: dir)
         do { _ = try store.load(); throw CheckFailure(description: "loaded") }
-        catch let e as LayoutStoreError { try expectEqual(e, .newerSchema(2)) }
+        catch let e as LayoutStoreError { try expectEqual(e, .newerSchema(Layouts.currentSchema + 1)) }
         do { try store.save(Layouts()); throw CheckFailure(description: "saved") }
-        catch let e as LayoutStoreError { try expectEqual(e, .newerSchema(2)) }
+        catch let e as LayoutStoreError { try expectEqual(e, .newerSchema(Layouts.currentSchema + 1)) }
         try expectEqual(try String(contentsOf: file, encoding: .utf8), newer)
     }),
 ]

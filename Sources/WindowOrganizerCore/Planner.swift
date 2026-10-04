@@ -18,9 +18,11 @@ public struct Plan: Equatable, Sendable {
     public var skipped: [Matcher]
     /// Windows already within 1 pt of their place.
     public var unchanged: Int
+    /// The window IDs tiled together in each zone, in tile order (S6): a new window re-tiles its own zone only.
+    public var tiles: [[Int]]
 
-    public init(moves: [Move], skipped: [Matcher], unchanged: Int) {
-        self.moves = moves; self.skipped = skipped; self.unchanged = unchanged
+    public init(moves: [Move], skipped: [Matcher], unchanged: Int, tiles: [[Int]] = []) {
+        self.moves = moves; self.skipped = skipped; self.unchanged = unchanged; self.tiles = tiles
     }
 }
 
@@ -42,7 +44,7 @@ public func planSnapshot(_ arrangement: ScreenArrangement, windows: [WindowInfo]
     for (place, window) in zip(placements, match.assigned) {
         guard let w = window else { plan.skipped.append(place.matcher); continue }
         let exact = place.screenUUID == screen.uuid && place.visibleFrame == screen.visibleFrame
-        let target = exact ? place.pixel : place.fraction.frame(in: screen.visibleFrame)
+        let target = exact ? place.pixel : place.fraction.frame(in: screen.visibleFrame).contained(in: screen.visibleFrame)
         if close(w.frame, target) { plan.unchanged += 1 }
         else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
     }

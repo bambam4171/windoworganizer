@@ -49,6 +49,9 @@ public struct UnitRect: Codable, Equatable, Sendable {
         self.x = x; self.y = y; self.width = width; self.height = height
     }
 
+    public var isValid: Bool { x.isFinite && y.isFinite && width.isFinite && height.isFinite && width > 0 && height > 0 }
+    public var isWithinUnit: Bool { isValid && x >= 0 && y >= 0 && x + width <= 1.000001 && y + height <= 1.000001 }
+
     public init(_ frame: Frame, in area: Frame) {
         self.init(x: (frame.x - area.x) / area.width, y: (frame.y - area.y) / area.height,
                   width: frame.width / area.width, height: frame.height / area.height)
@@ -75,23 +78,62 @@ public struct Placement: Codable, Equatable, Sendable {
     }
 }
 
-/// What one screen of one desktop should look like. Zones (S6) and auto tiling (S9) become further kinds.
+/// A zone member: every window of an app, or only those whose title matches the pattern (as Matcher.titlePattern).
+public struct ZoneMember: Codable, Equatable, Sendable {
+    public var bundleID: String
+    public var titlePattern: String?
+
+    public init(bundleID: String, titlePattern: String? = nil) { self.bundleID = bundleID; self.titlePattern = titlePattern }
+
+    public func matches(_ w: WindowInfo) -> Bool {
+        w.bundleID == bundleID && Matcher(bundleID: bundleID, titlePattern: titlePattern).matches(title: w.title)
+    }
+}
+
+/// A rectangle drawn on a screen (plan §1). Its members' windows are tiled inside it.
+public struct Zone: Codable, Equatable, Sendable {
+    public var rect: UnitRect
+    public var members: [ZoneMember]
+
+    public init(rect: UnitRect, members: [ZoneMember]) { self.rect = rect; self.members = members }
+}
+
+/// "Mail always on the Dell, Desktop 2" (plan §1): an app's windows go to one area of one screen while it shows that desktop.
+public struct AppRule: Codable, Equatable, Sendable {
+    public static let full = UnitRect(x: 0, y: 0, width: 1, height: 1)
+
+    public var bundleID: String
+    public var desktop: Int
+    /// The display UUID.
+    public var screen: String
+    public var area: UnitRect
+
+    public init(bundleID: String, desktop: Int, screen: String, area: UnitRect) {
+        self.bundleID = bundleID; self.desktop = desktop; self.screen = screen; self.area = area
+    }
+}
+
+/// What one screen of one desktop should look like. Auto tiling (S9) becomes a further kind.
 public struct ScreenArrangement: Codable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case snapshot([Placement])
+        case zones([Zone])
+        case autoTile
     }
 
     public var kind: Kind
 
     public init(kind: Kind) { self.kind = kind }
 
-    private enum CodingKeys: String, CodingKey { case kind, placements }
+    private enum CodingKeys: String, CodingKey { case kind, placements, zones }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let name = try c.decode(String.self, forKey: .kind)
         switch name {
         case "snapshot": kind = .snapshot(try c.decode([Placement].self, forKey: .placements))
+        case "zones": kind = .zones(try c.decode([Zone].self, forKey: .zones))
+        case "autoTile": kind = .autoTile
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c,
                                                    debugDescription: "unknown arrangement kind \"\(name)\"")
@@ -104,6 +146,11 @@ public struct ScreenArrangement: Codable, Equatable, Sendable {
         case .snapshot(let placements):
             try c.encode("snapshot", forKey: .kind)
             try c.encode(placements, forKey: .placements)
+        case .autoTile:
+            try c.encode("autoTile", forKey: .kind)
+        case .zones(let zones):
+            try c.encode("zones", forKey: .kind)
+            try c.encode(zones, forKey: .zones)
         }
     }
 }
@@ -111,14 +158,50 @@ public struct ScreenArrangement: Codable, Equatable, Sendable {
 /// Everything the user arranged: setup key → desktop number → screen UUID → arrangement.
 /// Desktops are keyed by position ("1", "2", …), not by Space ID, which changes when desktops are recreated.
 public struct Layouts: Codable, Equatable, Sendable {
-    public static let currentSchema = 1
+    public static let currentSchema = 2
 
     public var schema: Int
     public var setups: [String: [String: [String: ScreenArrangement]]]
+    /// App rules (S7), outside the setups: a rule applies in every setup where its screen is connected. One per app.
+    public private(set) var rules: [AppRule]
 
     public init() {
         schema = Layouts.currentSchema
         setups = [:]
+        rules = []
+    }
+
+    private enum CodingKeys: String, CodingKey { case schema, setups, rules }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let savedSchema = try c.decode(Int.self, forKey: .schema)
+        guard savedSchema >= 1, savedSchema <= Self.currentSchema else {
+            throw LayoutStoreError.unsupportedSchema(savedSchema)
+        }
+        schema = Self.currentSchema
+        setups = try c.decode([String: [String: [String: ScreenArrangement]]].self, forKey: .setups)
+        rules = try c.decodeIfPresent([AppRule].self, forKey: .rules) ?? []
+    }
+
+    /// Without rules the file is exactly as before S7.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schema, forKey: .schema)
+        try c.encode(setups, forKey: .setups)
+        if !rules.isEmpty { try c.encode(rules, forKey: .rules) }
+    }
+
+    /// Adds the rule, or replaces the one its app already has, in place.
+    public mutating func setRule(_ rule: AppRule) {
+        if let i = rules.firstIndex(where: { $0.bundleID == rule.bundleID }) { rules[i] = rule } else { rules.append(rule) }
+    }
+
+    public mutating func removeRule(_ bundleID: String) { rules.removeAll { $0.bundleID == bundleID } }
+
+    /// The rules that send apps to one desktop of one screen, as the editor lists them.
+    public func rules(desktop: Int, screen: String) -> [AppRule] {
+        rules.filter { $0.desktop == desktop && $0.screen == screen }
     }
 
     public func arrangement(setup: ScreenSetup, desktop: Int, screen: String) -> ScreenArrangement? {
@@ -127,5 +210,13 @@ public struct Layouts: Codable, Equatable, Sendable {
 
     public mutating func set(_ arrangement: ScreenArrangement, setup: ScreenSetup, desktop: Int, screen: String) {
         setups[setup.key, default: [:]][String(desktop), default: [:]][screen] = arrangement
+    }
+
+    /// Drops one screen's arrangement, and the desktop and setup entries it leaves empty.
+    public mutating func remove(setup: ScreenSetup, desktop: Int, screen: String) {
+        let d = String(desktop)
+        setups[setup.key]?[d]?[screen] = nil
+        if setups[setup.key]?[d]?.isEmpty == true { setups[setup.key]?[d] = nil }
+        if setups[setup.key]?.isEmpty == true { setups[setup.key] = nil }
     }
 }

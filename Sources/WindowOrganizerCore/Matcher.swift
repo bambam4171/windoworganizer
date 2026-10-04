@@ -46,7 +46,7 @@ public func matchWindows(_ matchers: [Matcher], _ windows: [WindowInfo]) -> Matc
     var assigned = [WindowInfo?](repeating: nil, count: matchers.count)
     var claimed = Set<Int>()
     func free(_ app: String) -> [WindowInfo] {
-        windows.filter { $0.bundleID == app && !claimed.contains($0.windowID) }.sorted { $0.order < $1.order }
+        windows.filter { $0.bundleID == app && !claimed.contains($0.windowID) }.sorted { ($0.order, $0.windowID) < ($1.order, $1.windowID) }
     }
     for (i, m) in matchers.enumerated() where m.titlePattern != nil {
         let candidates = free(m.bundleID).filter { m.matches(title: $0.title) }
@@ -55,8 +55,14 @@ public func matchWindows(_ matchers: [Matcher], _ windows: [WindowInfo]) -> Matc
         }
     }
     for (i, m) in matchers.enumerated() where m.titlePattern == nil {
+        if let title = m.seenTitle, !title.isEmpty,
+           let w = free(m.bundleID).first(where: { $0.title == title }) {
+            assigned[i] = w; claimed.insert(w.windowID)
+        }
+    }
+    for (i, m) in matchers.enumerated() where m.titlePattern == nil && assigned[i] == nil {
         let candidates = free(m.bundleID)
-        if let w = candidates.first(where: { $0.order >= m.order }) ?? candidates.first {
+        if let w = candidates.first(where: { $0.order == m.order }) ?? candidates.first {
             assigned[i] = w; claimed.insert(w.windowID)
         }
     }
