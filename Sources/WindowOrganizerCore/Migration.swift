@@ -38,7 +38,7 @@ public func migrateLayouts(from: URL, to: URL, apply: Bool, keep: MigrationKeep?
         let backup = to.appendingPathComponent("layouts.before-migrate-\(date).json")
         do {
             guard !FileManager.default.fileExists(atPath: backup.path) else { return .refused("\(backup.lastPathComponent) exists already; nothing was changed.") }
-            try loser.write(to: backup)
+            try migrationWrite(loser, backup)
             guard try Data(contentsOf: backup) == loser else {
                 try? FileManager.default.removeItem(at: backup)
                 return .refused("The backup did not read back identically; nothing was changed.")
@@ -51,7 +51,7 @@ public func migrateLayouts(from: URL, to: URL, apply: Bool, keep: MigrationKeep?
     do {
         try FileManager.default.createDirectory(at: to, withIntermediateDirectories: true)
         let temp = to.appendingPathComponent("layouts.json.migrating")
-        try data.write(to: temp)
+        try migrationWrite(data, temp)
         guard try Data(contentsOf: temp) == data else {
             try? FileManager.default.removeItem(at: temp)
             return .refused("The copy did not read back identically; nothing was kept.")
@@ -61,9 +61,12 @@ public func migrateLayouts(from: URL, to: URL, apply: Bool, keep: MigrationKeep?
     return .copied(setups: layouts.setups.count)
 }
 
+/// The one place migration writes bytes; the checks swap it for a writer that damages the file, to prove the read-back.
+nonisolated(unsafe) public var migrationWrite: (Data, URL) throws -> Void = { try $0.write(to: $1) }
+
 private func replaceVerified(_ data: Data, at target: URL, in folder: URL) throws {
     let temp = folder.appendingPathComponent("layouts.json.migrating")
-    try data.write(to: temp)
+    try migrationWrite(data, temp)
     guard try Data(contentsOf: temp) == data else {
         try? FileManager.default.removeItem(at: temp)
         throw CocoaError(.fileWriteUnknown)

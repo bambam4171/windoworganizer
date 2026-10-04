@@ -150,6 +150,23 @@ let migrationKeepChecks: [(String, @Sendable () throws -> Void)] = [
         guard case .refused = r else { throw CheckFailure(description: "expected refused, got \(r)") }
         try expect(try Data(contentsOf: old) == Data("precious".utf8) && bytes(f.to) == Data(sampleV1.utf8), "something changed")
     }),
+    ("a copy that does not read back is refused and leaves nothing behind", {
+        let f = try folders(sampleV2); defer { f.done() }
+        migrationWrite = { data, url in try data.dropLast().write(to: url) }
+        defer { migrationWrite = { try $0.write(to: $1) } }
+        let r = migrateLayouts(from: f.from, to: f.to, apply: true)
+        guard case .refused = r else { throw CheckFailure(description: "expected refused, got \(r)") }
+        try expect(bytes(f.to) == nil, "a damaged layouts.json was kept")
+    }),
+    ("a backup that does not read back stops a keep and changes nothing", {
+        let f = try conflictFolders(); defer { f.done() }
+        migrationWrite = { data, url in try data.dropLast().write(to: url) }
+        defer { migrationWrite = { try $0.write(to: $1) } }
+        let r = migrateLayouts(from: f.from, to: f.to, apply: true, keep: .review, date: "D")
+        guard case .refused = r else { throw CheckFailure(description: "expected refused, got \(r)") }
+        try expect(bytes(f.to) == Data(sampleV1.utf8), "current changed")
+        try expect(!FileManager.default.fileExists(atPath: f.to.appendingPathComponent("layouts.before-migrate-D.json").path), "bad backup left")
+    }),
     ("layout summary counts setups and desktops", {
         let f = try folders(sampleV2); defer { f.done() }
         try expect(layoutSummary(at: f.from) == "1 screen setup, 1 desktop", "\(String(describing: layoutSummary(at: f.from)))")
