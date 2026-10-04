@@ -970,6 +970,19 @@ func runUISmoke() -> Int32 {
             let emptied = try loadGroups().isEmpty
             return left.count == 1 && left[0].matcher.titlePattern == nil && one.members == [termMember] && emptied
         })
+        check("groups: changing a member's title filter drops only that member's saved position, and says so", {
+            var l = Layouts()
+            let pos = [GroupPosition(matcher: Matcher(bundleID: "com.apple.Terminal"), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 1)),
+                       GroupPosition(matcher: Matcher(bundleID: "com.apple.Terminal", titlePattern: "Logs"), fraction: UnitRect(x: 0.5, y: 0, width: 0.5, height: 1))]
+            l.setGroup(WindowGroup(id: "p", name: "P", members: [termMember, logMember], screen: "G-A", desktops: [1], mode: .saved(pos)))
+            try layoutStore().save(l)
+            let g = groupsWindow()
+            _ = g.setPattern(0, 1, "Build")
+            guard case .saved(let left) = g.draft[0].mode else { return false }
+            let one = left.count == 1 && left[0].matcher.titlePattern == nil && g.status.stringValue.contains("dropped")
+            _ = g.setPattern(0, 0, "Other")
+            return one && g.draft[0].mode == .tiled && g.draft[0].members.map(\.titlePattern) == ["Other", "Build"]
+        })
         check("groups: Not assigned clears the desktops and disables the pull-down; a disconnected stored screen is kept", {
             var l = Layouts()
             l.setGroup(WindowGroup(id: "a", name: "A", members: [termMember], screen: "G-A", desktops: [1, 3]))
@@ -1012,6 +1025,9 @@ func runUISmoke() -> Int32 {
             groupsDesktop = 1
             let g = groupsWindow()
             let off = g.captureProblem(g.draft[0]) != nil
+            g.setMode(0, saved: true)
+            let offDisabled = !(gline(g, 0).compactMap { $0 as? NSButton }.first { $0.title == "Capture" }?.isEnabled ?? true)
+            g.setMode(0, saved: false)
             groupsDesktop = 2
             g.setMode(0, saved: true)
             let pending = g.draft[0].mode == .tiled
@@ -1020,7 +1036,7 @@ func runUISmoke() -> Int32 {
             g.setMode(1, saved: true); g.capture(1)
             let empty = g.draft[1].mode == .tiled && g.status.stringValue.contains("No window of this group is open on Studio display")
             g.setMode(0, saved: false)
-            return off && pending && positions.count == 2 && empty && g.draft[0].mode == .tiled
+            return off && offDisabled && pending && positions.count == 2 && empty && g.draft[0].mode == .tiled
         })
         check("groups: deleting every group leaves schema 2 with no groups key", {
             var l = Layouts(); l.setGroup(WindowGroup(id: "z", name: "Z", members: [termMember])); try layoutStore().save(l)

@@ -144,11 +144,12 @@ final class GroupsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         if new == old { return nil }
         if draft[i].members.contains(new) { return "That app and title are already in this group." }
         draft[i].members[m] = new
-        if case .saved(let positions) = draft[i].mode {   // the positions follow the member's new pattern
-            let moved = positions.map { p -> GroupPosition in
-                var p = p; if p.matcher.bundleID == old.bundleID && p.matcher.titlePattern == old.titlePattern { p.matcher.titlePattern = new.titlePattern }; return p
+        if case .saved(let positions) = draft[i].mode {   // a rect taken for the old filter must not place another window
+            let kept = positions.filter { !($0.matcher.bundleID == old.bundleID && $0.matcher.titlePattern == old.titlePattern) }
+            if kept.count != positions.count {
+                draft[i].mode = kept.isEmpty ? .tiled : .saved(kept)
+                status.stringValue = "Saved position of \(Self.appName(old.bundleID)) dropped: its title filter changed. Capture again."
             }
-            draft[i].mode = .saved(moved)
         }
         rebuild(); return nil
     }
