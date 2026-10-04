@@ -96,4 +96,96 @@ let sortChecks: [(String, @Sendable () throws -> Void)] = [
         try expectEqual(d2?.moves.first { $0.windowID == 1 }?.to, tiles[0])
         try expect(l.arrangeSettings(desktop: 2, screen: "MBP").sortsByName == false, "desktop 2 default")
     }),
+    // SORT-MODE: "I arrange the order myself".
+    ("the manual order survives new window IDs", {
+        let before = [named(1, app: "Zed", bundle: "com.z"), named(2, app: "Ant", bundle: "com.a"), named(3, app: "Mid", bundle: "com.m")]
+        let order = manualOrder(for: [before[1], before[2], before[0]])
+        let after = [named(11, app: "Zed", bundle: "com.z"), named(12, app: "Mid", bundle: "com.m"), named(13, app: "Ant", bundle: "com.a")]
+        try expectEqual(arrangeOrder(after, settings: ArrangeSettings(manualOrder: order)).map(\.windowID), [13, 12, 11])
+    }),
+    ("a window not in the order goes last, in today's order", {
+        let known = [named(1, app: "Zed", bundle: "com.z"), named(2, app: "Ant", bundle: "com.a")]
+        let order = manualOrder(for: [known[1], known[0]])
+        let now = [named(5, app: "New", bundle: "com.n1"), known[0], named(6, app: "New", bundle: "com.n2"), known[1]]
+        try expectEqual(arrangeOrder(now, settings: ArrangeSettings(manualOrder: order)).map(\.windowID), [2, 1, 5, 6])
+    }),
+    ("two windows with one title keep their stored order", {
+        let a = named(1, app: "Terminal", bundle: "com.t", title: "zsh", order: 0), b = named(2, app: "Terminal", bundle: "com.t", title: "zsh", order: 1)
+        let order = manualOrder(for: [b, a])
+        let got = arrangeOrder([named(7, app: "Terminal", bundle: "com.t", title: "zsh", order: 0),
+                                named(8, app: "Terminal", bundle: "com.t", title: "zsh", order: 1)], settings: ArrangeSettings(manualOrder: order))
+        try expectEqual(got.map(\.windowID), [8, 7])
+    }),
+    ("a closed window's entry cannot take a later entry's window (B1)", {
+        let a = named(1, app: "Safari", bundle: "com.s", title: "A", order: 0), x = named(2, app: "Chrome", bundle: "com.c", title: "X", order: 0)
+        let b = named(3, app: "Safari", bundle: "com.s", title: "B", order: 1)
+        let order = manualOrder(for: [a, x, b])
+        // A closed: B is now Safari's first window. Entry A must not take B ahead of X.
+        let got = arrangeOrder([named(12, app: "Chrome", bundle: "com.c", title: "X", order: 0),
+                                named(13, app: "Safari", bundle: "com.s", title: "B", order: 0)], settings: ArrangeSettings(manualOrder: order))
+        try expectEqual(got.map(\.windowID), [12, 13])
+    }),
+    ("by name ignores the stored order, and switching back restores it", {
+        let ws = [named(1, app: "Zed", bundle: "com.z"), named(2, app: "Ant", bundle: "com.a")]
+        var s = ArrangeSettings(manualOrder: manualOrder(for: ws))
+        try expectEqual(arrangeOrder(ws, settings: s).map(\.windowID), [1, 2])
+        s.sortByName = true
+        try expectEqual(arrangeOrder(ws, settings: s).map(\.windowID), [2, 1])
+        try expect(s.manualOrder != nil, "order kept")
+        s.sortByName = nil
+        try expectEqual(arrangeOrder(ws, settings: s).map(\.windowID), [1, 2])
+        var l = Layouts()
+        l.setArrangeSettings(s, desktop: 1, screen: "MBP")
+        let back = try LayoutStore.decode(JSONEncoder().encode(l))
+        try expectEqual(back.arrangeSettings(desktop: 1, screen: "MBP").manualOrder, s.manualOrder)
+    }),
+    ("no order = today's order", {
+        try expectEqual(arrangeOrder(shuffled, settings: ArrangeSettings()).map(\.windowID), shuffled.map(\.windowID))
+        try expectEqual(arrangeOrder(shuffled, settings: ArrangeSettings(manualOrder: [])).map(\.windowID), shuffled.map(\.windowID))
+    }),
+    ("snapshot, zone and rule windows keep their place in both modes", {
+        let setup = sortHere
+        let term = named(1, app: "Terminal", bundle: "com.t"), mail = named(2, app: "Mail", bundle: "com.m"), ant = named(3, app: "Ant", bundle: "com.a")
+        let ws = [term, mail, ant]
+        func layouts(_ s: ArrangeSettings?) -> Layouts {
+            var l = Layouts()
+            let place = Placement(matcher: Matcher(bundleID: "com.t"), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 1),
+                                  pixel: Frame(x: 0, y: 25, width: 720, height: 875), screenUUID: "MBP", visibleFrame: laptop.visibleFrame)
+            l.set(ScreenArrangement(kind: .snapshot([place])), setup: setup, desktop: 1, screen: "MBP")
+            l.set(ScreenArrangement(kind: .zones([Zone(rect: UnitRect(x: 0.5, y: 0, width: 0.5, height: 1), members: [ZoneMember(bundleID: "com.m")])])),
+                  setup: setup, desktop: 2, screen: "MBP")
+            l.set(ScreenArrangement(kind: .autoTile), setup: setup, desktop: 3, screen: "MBP")
+            for d in 1...3 { if let s { l.setArrangeSettings(s, desktop: d, screen: "MBP") } }
+            return l
+        }
+        let order = manualOrder(for: [ant, mail, term])
+        for d in 1...2 {
+            let plain = planRestore(layouts(nil), windows: ws, screens: [laptop], desktops: ["MBP": d])
+            for s in [ArrangeSettings(sortByName: true), ArrangeSettings(manualOrder: order)] {
+                try expectEqual(planRestore(layouts(s), windows: ws, screens: [laptop], desktops: ["MBP": d])?.moves, plain?.moves)
+            }
+        }
+    }),
+    ("an S2 file reads unchanged", {
+        var l = Layouts()
+        l.setArrangeSettings(ArrangeSettings(gap: 8, sortByName: true), desktop: 1, screen: "MBP")
+        let data = try JSONEncoder().encode(l)
+        try expect(!String(decoding: data, as: UTF8.self).contains("manualOrder"), "not written when nil")
+        let back = try LayoutStore.decode(data)
+        try expect(back.arrangeSettings(desktop: 1, screen: "MBP").sortsByName, "reads as by name")
+        try expectEqual(try JSONEncoder().encode(back), data)
+    }),
+    ("invalid order refused", {
+        let ok = (0..<64).map { Matcher(bundleID: "com.x\($0)") }
+        var l = Layouts()
+        l.setArrangeSettings(ArrangeSettings(manualOrder: ok), desktop: 1, screen: "MBP")
+        try l.validate()
+        for bad in [ok + [Matcher(bundleID: "com.over")], [Matcher(bundleID: "")]] {
+            var b = Layouts()
+            b.setArrangeSettings(ArrangeSettings(manualOrder: bad), desktop: 1, screen: "MBP")
+            var refused = false
+            do { try b.validate() } catch { refused = true }
+            try expect(refused, "refused \(bad.count)")
+        }
+    }),
 ]
