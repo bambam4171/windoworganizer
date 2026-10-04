@@ -22,18 +22,28 @@ public func sortedByName(_ windows: [WindowInfo]) -> [WindowInfo] {
 public func arrangeOrder(_ windows: [WindowInfo], settings: ArrangeSettings) -> [WindowInfo] {
     if settings.sortsByName { return sortedByName(windows) }
     guard let order = settings.manualOrder, !order.isEmpty else { return windows }
-    // Like a snapshot place (exact title, else the place's own order, else the oldest of the app), except that a
-    // title AND order match goes first: two windows with one title must keep the order they were stored in.
-    var matched: [WindowInfo] = []
+    // Like matchWindows: every entry claims in passes (title and order, title, order, oldest of the app), so a stored
+    // entry whose window closed cannot take a window that a later entry matches by its exact title. The result keeps
+    // the entries' order.
+    var found = [Int: WindowInfo]()
     var claimed = Set<Int>()
-    for m in order {
-        let free = windows.filter { $0.bundleID == m.bundleID && !claimed.contains($0.windowID) }
+    func free(for m: Matcher) -> [WindowInfo] {
+        windows.filter { $0.bundleID == m.bundleID && !claimed.contains($0.windowID) }
             .sorted { ($0.order, $0.windowID) < ($1.order, $1.windowID) }
-        let sameTitle = free.filter { m.seenTitle?.isEmpty == false && $0.title == m.seenTitle }
-        guard let w = sameTitle.first(where: { $0.order == m.order }) ?? sameTitle.first ?? free.first(where: { $0.order == m.order }) ?? free.first
-        else { continue }
-        matched.append(w); claimed.insert(w.windowID)
     }
+    let passes: [(Matcher, [WindowInfo]) -> WindowInfo?] = [
+        { m, free in free.first { m.seenTitle?.isEmpty == false && $0.title == m.seenTitle && $0.order == m.order } },
+        { m, free in free.first { m.seenTitle?.isEmpty == false && $0.title == m.seenTitle } },
+        { m, free in free.first { $0.order == m.order } },
+        { _, free in free.first },
+    ]
+    for pass in passes {
+        for (i, m) in order.enumerated() where found[i] == nil {
+            guard let w = pass(m, free(for: m)) else { continue }
+            found[i] = w; claimed.insert(w.windowID)
+        }
+    }
+    let matched = order.indices.compactMap { found[$0] }
     let taken = Set(matched.map(\.windowID))
     return matched + windows.filter { !taken.contains($0.windowID) }
 }
