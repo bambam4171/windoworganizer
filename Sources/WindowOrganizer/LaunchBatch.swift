@@ -19,8 +19,15 @@ func liveAppName(_ id: String) -> String {
     return id
 }
 
+/// Times the real launcher was reached while WO_STATE_DIR was set (a check or the smoke); a check asserts it stays 0 (D-1975).
+@MainActor var blockedLiveLaunches = 0
+
 @MainActor
 func liveLaunch(_ id: String, _ done: @escaping @MainActor (LaunchOutcome) -> Void) {
+    // A test run never opens a real app: with a state dir set, count the attempt and fail it.
+    if ProcessInfo.processInfo.environment["WO_STATE_DIR"] != nil {
+        Task { @MainActor in blockedLiveLaunches += 1; done(.failed(id)) }; return
+    }
     guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { done(.notInstalled); return }
     let name = url.deletingPathExtension().lastPathComponent
     let configuration = NSWorkspace.OpenConfiguration()

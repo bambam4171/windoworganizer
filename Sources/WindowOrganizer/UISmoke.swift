@@ -526,14 +526,14 @@ func runUISmoke() -> Int32 {
             defer { try? layoutStore().save(guardLayouts); LaunchBatch.current?.cancel() }
             let zone = Zone(rect: UnitRect(x: 0, y: 0, width: 1, height: 1), members: [ZoneMember(bundleID: notes)])
             var zoned = Layouts(); zoned.set(ScreenArrangement(kind: .zones([zone])), setup: setup, desktop: 1, screen: screen.uuid)
-            editor.pick()
+            editor.desktopPopUp.selectItem(at: 0); editor.pick()
             @MainActor func run(_ layouts: Layouts, on: Bool) throws -> [String] {
                 try layoutStore().save(layouts); Preferences.defaults.set(on, forKey: "startMissing.applySave")
                 let calls = Calls(); editor.launchProviders = launching(CountingMover(), calls, outcome: nil)
                 editor.startAfterSave(); LaunchBatch.current?.cancel(); return calls.ids
             }
             let zones = try run(zoned, on: true), capture = try run(guardLayouts, on: true), off = try run(zoned, on: false)
-            Preferences.defaults.removeObject(forKey: "startMissing.applySave"); editor.launchProviders = .live
+            Preferences.defaults.removeObject(forKey: "startMissing.applySave"); editor.launchProviders = launching(CountingMover(), Calls(), outcome: nil)
             return zones == [notes] && capture.isEmpty && off.isEmpty
         })
         check("automatic restore waits while the editor holds a draft", {
@@ -805,6 +805,13 @@ func runUISmoke() -> Int32 {
             let corrupt = Data("broken".utf8); try corrupt.write(to: layoutStore().file); editor.pick(); editor.save()
             let after = try Data(contentsOf: layoutStore().file)
             return editor.readFailed && !editor.saveButton.isEnabled && after == corrupt
+        })
+        check("no check reached the real launcher, and the real launcher refuses to open an app under a test state dir", {
+            var outcome: LaunchOutcome?
+            liveLaunch("com.apple.mail") { outcome = $0 }
+            spin()
+            guard case .failed? = outcome else { return false }
+            return blockedLiveLaunches == 1  // only the probe above
         })
         editor.window.close()
     } catch { print("FAIL UI setup: \(error)"); failed += 1 }
