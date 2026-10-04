@@ -119,4 +119,12 @@ let groupApplyChecks: [(String, @Sendable () throws -> Void)] = [
         s.clear([GroupKey(screen: "MBP", desktop: 2)])
         try expect(s.isEmpty && s.pending.isEmpty, "empty")
     }),
+    ("group apply 9: the moves of a group apply carry the old frames, so Undo puts them back", {
+        let a = grp("a", "A", [safari, term])
+        let ws = [window(1, safari, "s", 0, anywhere), window(2, term, "t", 0, Frame(x: 50, y: 60, width: 300, height: 200))]
+        let p = arrange(layouts([a]), session([a]), ws)
+        let undo = (p?.moves ?? []).map { Move(windowID: $0.windowID, from: $0.to, to: $0.from, area: nil) }
+        try expectEqual(undo.map(\.to), [anywhere, Frame(x: 50, y: 60, width: 300, height: 200)])
+        try expectEqual(undo.map(\.windowID), [1, 2])
+    }),
 ]

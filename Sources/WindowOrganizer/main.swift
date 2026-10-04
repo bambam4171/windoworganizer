@@ -144,6 +144,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     }
     func trigger(_ event: TriggerEvent) {
         let action = triggers.handle(event)
+        defer { if case .spaceChanged = event, let line = applyPendingGroups(paused: triggers.paused) { lastResult = line } }
         var plugged = false
         if case .screensSettled = event {
             plugged = screenWatch.settle(Set(currentScreens().map(\.uuid)))
@@ -179,6 +180,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         add("Undo last arrangement", #selector(undo), enabled: trusted && RestoreSession.shared.canUndo)
         menu.addItem(.separator())
         add("Layouts…", #selector(openLayouts))
+        addGroupsMenu(screens: screens)
         let pause = add("Pause automatic arrangement", #selector(togglePause)); pause.state = triggers.paused ? .on : .off
         if triggers.paused { add("Automatic arrangement is paused", nil) }
         if !trusted { add("Enable Accessibility…", #selector(openPermission)) }
@@ -188,7 +190,21 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         let quit = NSMenuItem(title: "Quit Window Organizer", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp; menu.addItem(quit)
     }
-    @objc func restore() { lastResult = restoreNow(launch: .restore) }
+    func addGroupsMenu(screens: [ScreenInfo]) {
+        guard let layouts = try? layoutStore().load(),
+              let parent = groupsMenuItem(layouts: layouts, screens: screens, desktops: WorkspaceContext.live().desktops, trusted: Permission.trusted,
+                                          session: GroupState.session, target: self, action: #selector(applyGroup(_:))) else { return }
+        menu.addItem(parent)
+    }
+    @objc func applyGroup(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        if let line = applyGroupNow(id) { lastResult = line }
+    }
+    @objc func restore() {
+        let desktops = WorkspaceContext.live().desktops
+        GroupState.session.clear(desktops.map { GroupKey(screen: $0.key, desktop: $0.value) })
+        lastResult = restoreNow(launch: .restore)
+    }
     @objc func remember() { lastResult = rememberNow() }
     @objc func undo() { lastResult = RestoreSession.shared.undo() }
     @objc func togglePause() {

@@ -100,6 +100,77 @@ func rememberNow(_ p: WorkspaceProviders = .live) -> String {
     }
 }
 
+/// The groups applied in this session (WO-GROUPS-G3). Memory only: a restart arranges from the stored layouts.
+@MainActor
+enum GroupState { static var session = GroupSession() }
+
+/// The "Groups" submenu (WO-GROUPS-G3): nil without groups, a disabled reason per group that cannot apply,
+/// a check on the group applied last on a visible desktop.
+@MainActor
+func groupsMenuItem(layouts: Layouts, screens: [ScreenInfo], desktops: [String: Int], trusted: Bool, session: GroupSession,
+                    target: AnyObject, action: Selector) -> NSMenuItem? {
+    guard !layouts.groups.isEmpty else { return nil }
+    let sub = NSMenu(); sub.autoenablesItems = false
+    let checked = Set(desktops.compactMap { session.last(GroupKey(screen: $0.key, desktop: $0.value), layouts: layouts)?.id })
+    for g in layouts.groups {
+        let reason = !g.isAssigned ? "Not assigned" : (screens.contains { $0.uuid == g.screen } ? nil : "Display not connected")
+        let entry = NSMenuItem(title: reason.map { "\(g.name) · \($0)" } ?? g.name, action: reason == nil ? action : nil, keyEquivalent: "")
+        entry.target = target; entry.representedObject = g.id; entry.isEnabled = reason == nil && trusted
+        entry.state = checked.contains(g.id) ? .on : .off
+        sub.addItem(entry)
+    }
+    let parent = NSMenuItem(title: "Groups", action: nil, keyEquivalent: ""); parent.submenu = sub
+    return parent
+}
+
+/// A group chosen in the menu, or a pending desktop visited: places the group's windows through the same seam as Restore.
+/// `only` limits the apply to one key (a visit), otherwise the group goes on every visible desktop it is assigned to.
+@MainActor
+func applyGroupNow(_ id: String, only key: GroupKey? = nil, _ p: WorkspaceProviders = .live) -> String? {
+    do {
+        let (report, listing, ctx) = try guardedSnapshot(p)
+        guard report.trusted else { return StatusLine.text(trusted: false, desktop: nil, windows: 0, screens: 0) }
+        guard listing.warnings.isEmpty else { return "Not placed: " + listing.warnings.joined(separator: " ") }
+        let layouts = try p.store().load()
+        guard let g = layouts.group(id: id), g.isAssigned, let screen = g.screen, report.screens.contains(where: { $0.uuid == screen }) else {
+            return "Group could not be applied: it is not assigned or its display is not connected."
+        }
+        let desktop = ctx.desktops[screen] ?? report.desktop?.number
+        let later: [Int]
+        let visible: Int?
+        if let key {
+            visible = key.desktop; later = []
+        } else {
+            let r = GroupState.session.apply(g, desktops: ctx.desktops)
+            visible = r.now?.desktop; later = r.later.map(\.desktop).sorted()
+        }
+        guard let visible else { return ResultLine.group(g.name, nil, later: later, desktop: desktop, at: clock()) }
+        let plan = planArrange(layouts, session: GroupState.session, windows: report.windows, screens: report.screens, desktops: ctx.desktops,
+                               scope: WorkspaceSelection(screenUUID: screen, desktop: visible))
+        guard let plan else { return ResultLine.group(g.name, ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0), later: later, desktop: desktop, at: clock()) }
+        let applied = RestoreSession.shared.apply(plan, listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx })
+        return ResultLine.group(g.name, applied, later: later, desktop: desktop, at: clock())
+    } catch {
+        return "Not placed: \(error)"
+    }
+}
+
+/// Visiting a desktop where a group waits: applies it for that key only, never while paused.
+@MainActor
+func applyPendingGroups(paused: Bool, _ p: WorkspaceProviders = .live) -> String? {
+    guard !paused, !GroupState.session.pending.isEmpty else { return nil }
+    let ctx = p.context()
+    var line: String?
+    for (uuid, desktop) in ctx.desktops.sorted(by: { $0.key < $1.key }) {
+        let key = GroupKey(screen: uuid, desktop: desktop)
+        guard GroupState.session.visited(key) else { continue }
+        let layouts = try? p.store().load()
+        guard let layouts, let g = GroupState.session.last(key, layouts: layouts) else { continue }
+        if let l = applyGroupNow(g.id, only: key, p) { line = l }
+    }
+    return line
+}
+
 /// "Restore": puts this desktop's windows back where they were remembered. Returns the menu's result line.
 /// An automatic arrange (a trigger, not the menu) stays quiet when there is no permission or nothing remembered: nil,
 /// and never moves windows under a canvas preview the editor has not applied.
@@ -113,7 +184,7 @@ func restoreNow(automatic: Bool = false, launch: LaunchTrigger? = nil, _ p: Work
         guard listing.warnings.isEmpty else { return "Not restored: " + listing.warnings.joined(separator: " ") }
         if automatic && !ctx.isIdentified { return nil }
         let layouts = try p.store().load()
-        let plan = planRestore(layouts, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
+        let plan = planArrange(layouts, session: GroupState.session, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
         // Started after the arrangement is read, so the batch places the new windows; its context is this one.
         let starting = startMissingApps(launch, layouts: layouts, report: report, desktops: ctx.desktops, p)
         guard let plan else {

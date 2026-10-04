@@ -1089,6 +1089,65 @@ func runUISmoke() -> Int32 {
             editor.window.appearance = nil
             return true
         })
+        check("Groups: menu items, disabled reasons, checkmark, apply, later desktop, visit and pause", {
+            defer { GroupState.session = GroupSession(); try? layoutStore().save(guardLayouts) }
+            var gl = guardLayouts
+            let work = WindowGroup(id: "g-work", name: "Work", members: [ZoneMember(bundleID: w.bundleID)], screen: screen.uuid, desktops: [1, 2])
+            try gl.setGroup(work)
+            try gl.setGroup(WindowGroup(id: "g-spare", name: "Spare", members: [ZoneMember(bundleID: "a.b")]))
+            try gl.setGroup(WindowGroup(id: "g-away", name: "Away", members: [ZoneMember(bundleID: "a.c")], screen: "gone", desktops: [1]))
+            try layoutStore().save(gl)
+            GroupState.session = GroupSession()
+            guard groupsMenuItem(layouts: Layouts(), screens: [screen], desktops: [screen.uuid: 1], trusted: true, session: GroupState.session, target: editor, action: #selector(NSObject.description)) == nil else { return false }
+            let mover = CountingMover(); var p = fake(mover, flipAt: nil)
+            p.store = { layoutStore() }
+            let line = applyGroupNow("g-work", p) ?? ""
+            guard mover.sets == [1], line.contains("Group Work"), line.contains("Desktop 2 on next visit"),
+                  GroupState.session.pending == [GroupKey(screen: screen.uuid, desktop: 2)] else { return false }
+            guard let item = groupsMenuItem(layouts: gl, screens: [screen], desktops: [screen.uuid: 1], trusted: true, session: GroupState.session, target: editor, action: #selector(NSObject.description)),
+                  let items = item.submenu?.items else { return false }
+            let ok = items.map(\.title) == ["Work", "Spare · Not assigned", "Away · Display not connected"]
+                && items.map(\.isEnabled) == [true, false, false] && items.map(\.state) == [.on, .off, .off]
+            // Paused: the visit changes nothing and the desktop stays pending. Then the visit applies it, for that key only.
+            var at2 = fake(CountingMover(), flipAt: nil); at2.context = { atDesktop2 }; at2.store = { layoutStore() }
+            let held = applyPendingGroups(paused: true, at2)
+            guard ok, held == nil, GroupState.session.pending.count == 1 else { return false }
+            let visit = CountingMover(); var v = fake(visit, flipAt: nil); v.context = { atDesktop2 }; v.store = { layoutStore() }
+            let visited = applyPendingGroups(paused: false, v) ?? ""
+            return visit.sets == [1] && visited.contains("Group Work") && GroupState.session.pending.isEmpty
+        })
+        check("shots: Groups submenu and result line (light, dark)", {
+            defer { GroupState.session = GroupSession(); try? layoutStore().save(guardLayouts) }
+            var gl = guardLayouts
+            try gl.setGroup(WindowGroup(id: "g-work", name: "Work", members: [ZoneMember(bundleID: w.bundleID)], screen: screen.uuid, desktops: [1, 2]))
+            try gl.setGroup(WindowGroup(id: "g-spare", name: "Spare", members: [ZoneMember(bundleID: "a.b")]))
+            try gl.setGroup(WindowGroup(id: "g-away", name: "Away", members: [ZoneMember(bundleID: "a.c")], screen: "gone", desktops: [1]))
+            try layoutStore().save(gl); GroupState.session = GroupSession()
+            var p = fake(CountingMover(), flipAt: nil); p.store = { layoutStore() }
+            let line = applyGroupNow("g-work", p) ?? ""
+            guard let parent = groupsMenuItem(layouts: gl, screens: [screen], desktops: [screen.uuid: 1], trusted: true, session: GroupState.session, target: editor, action: #selector(NSObject.description)),
+                  let items = parent.submenu?.items else { return false }
+            // The menu cannot be drawn offscreen: a replica built from the real items (title, check, enabled) in a menu-width stack.
+            func replica(_ rows: [(String, Bool, Bool)]) -> NSWindow {
+                let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 6
+                stack.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+                for (title, on, enabled) in rows {
+                    let l = NSTextField(labelWithString: (on ? "✓ " : "    ") + title)
+                    l.font = .menuFont(ofSize: 0); l.textColor = enabled ? .labelColor : .disabledControlTextColor
+                    stack.addArrangedSubview(l)
+                }
+                let win = NSWindow(contentRect: NSRect(origin: .zero, size: NSSize(width: 340, height: stack.fittingSize.height)), styleMask: [.titled], backing: .buffered, defer: false)
+                win.contentView = stack; return win
+            }
+            let menuWin = replica(items.map { ($0.title, $0.state == .on, $0.isEnabled) })
+            let resultWin = replica([(line, false, true)])
+            resultWin.setContentSize(NSSize(width: 520, height: resultWin.contentView!.fittingSize.height))
+            for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                for win in [menuWin, resultWin] { win.appearance = NSAppearance(named: appearance); win.contentView?.layoutSubtreeIfNeeded() }
+                try shot(menuWin, "menu-groups-\(mode)"); try shot(resultWin, "result-group-\(mode)")
+            }
+            return line.contains("Desktop 2 on next visit")
+        })
         editor.window.close()
     } catch { print("FAIL UI setup: \(error)"); failed += 1 }
     print("UI: \(passed) passed / \(failed) failed")
