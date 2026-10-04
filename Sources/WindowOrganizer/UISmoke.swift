@@ -384,6 +384,14 @@ func runUISmoke() -> Int32 {
             try layoutStore().save(guardLayouts)
             return mover.sets.count == 1 && line.hasPrefix("Stopped")
         })
+        check("Restore plans from the context's desktop, not a fresh read", {
+            var two = Layouts(); two.set(remember([w], on: screen), setup: setup, desktop: 2, screen: screen.uuid); try layoutStore().save(two)
+            defer { try? layoutStore().save(guardLayouts) }
+            let mover = CountingMover(); var p = fake(mover, flipAt: nil)
+            p.context = { atDesktop2 }
+            let line = restoreNow(automatic: false, p) ?? ""
+            return mover.sets == [1] && line.contains("placed")
+        })
         check("switch before saving: Remember writes nothing", {
             let mover = CountingMover()
             let line = rememberNow(fake(mover, flipAt: 3))
