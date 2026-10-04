@@ -6,7 +6,7 @@ import WindowOrganizerCore
 @MainActor
 enum Preferences {
     static let changed = Notification.Name("WindowOrganizerPreferencesChanged")
-    static let defaults = UserDefaults.standard
+    static var defaults = UserDefaults.standard
     static var paused: Bool { get { defaults.bool(forKey: "paused") } set { defaults.set(newValue, forKey: "paused") } }
     static var restoreAtLaunch: Bool { defaults.bool(forKey: "restoreAtLaunch") }
     static var restoreOnScreens: Bool { defaults.bool(forKey: "restoreOnScreens") }

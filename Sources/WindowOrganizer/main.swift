@@ -36,7 +36,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     var permissionTimer: Timer?
     var wasTrusted = false
     var generation = 0
-    var knownScreens: Set<String> = Set(currentScreens().map(\.uuid))
+    var screenWatch = ScreenWatch(known: Set(currentScreens().map(\.uuid)))
 
     override init() {
         super.init()
@@ -135,7 +135,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     }
     func scheduleScreens() {
         settle?.cancel()
-        guard Preferences.restoreOnScreens, !triggers.paused else { knownScreens = Set(currentScreens().map(\.uuid)); return }
+        guard Preferences.restoreOnScreens, !triggers.paused else { _ = screenWatch.settle(Set(currentScreens().map(\.uuid))); return }
         settle = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled, let self, Preferences.restoreOnScreens, !self.triggers.paused else { return }
@@ -146,8 +146,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         let action = triggers.handle(event)
         var plugged = false
         if case .screensSettled = event {
-            let now = Set(currentScreens().map(\.uuid))
-            plugged = gainedScreen(previous: knownScreens, current: now); knownScreens = now
+            plugged = screenWatch.settle(Set(currentScreens().map(\.uuid)))
         }
         let permitted: Bool
         if case .start = event { permitted = Preferences.restoreAtLaunch }
@@ -156,9 +155,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         case .none, .placeWindow, .autoCheck: break  // .autoCheck is wired in AUTO-MODE S2
         case .arrange:
             // Only a start (login switch) or a screen that was not there at the previous settle may start apps.
-            var launch: LaunchTrigger?
-            if case .start = event { launch = .login }
-            if plugged { launch = .screenPlug }
+            let launch = launchTrigger(for: event, plugged: plugged)
             if permitted, let line = restoreNow(automatic: true, launch: launch) { lastResult = line }
         case .settle: scheduleScreens()
         }

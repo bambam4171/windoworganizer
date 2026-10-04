@@ -145,3 +145,22 @@ func startMissingApps(_ trigger: LaunchTrigger?, layouts: Layouts, report: ListR
     let ids = appsToStart(layouts, screens: report.screens, desktops: desktops, scope: scope, running: p.running())
     return LaunchBatch.begin(ids, scope: scope, p)?.startingNames ?? []
 }
+
+/// Which start switch an automatic arrange answers to: a start is a login, a settle that gained a screen is a plug;
+/// a wake, a resolution change, an unplug and a pending desktop start nothing.
+func launchTrigger(for event: TriggerEvent, plugged: Bool) -> LaunchTrigger? {
+    switch event {
+    case .start: return .login
+    case .screensSettled: return plugged ? .screenPlug : nil
+    default: return nil
+    }
+}
+
+/// The screens at the previous settle. A settle counts as a plug only when it gained a screen UUID.
+struct ScreenWatch {
+    var known: Set<String>
+    mutating func settle(_ now: Set<String>) -> Bool {
+        defer { known = now }
+        return gainedScreen(previous: known, current: now)
+    }
+}
