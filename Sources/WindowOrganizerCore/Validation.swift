@@ -24,6 +24,10 @@ extension Layouts {
                 }
             }
         }
+        for (desktop, screens) in arrange {
+            try require(Int(desktop).map { $0 >= 0 && $0 <= 1000 } ?? false)
+            for (screen, settings) in screens { try require(!screen.isEmpty && (0...ArrangeSettings.maxGap).contains(settings.gapPoints)) }
+        }
         try require(Set(rules.map(\.bundleID)).count == rules.count)
         for rule in rules { try require(!rule.bundleID.isEmpty && !rule.screen.isEmpty && rule.desktop >= 0 && rule.desktop <= 1000 && rule.area.isWithinUnit) }
     }

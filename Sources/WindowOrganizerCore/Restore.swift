@@ -61,14 +61,19 @@ public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [Scr
     let free = windows.filter { !ruled.contains($0.bundleID) }
     let match = matchWindows(places.map(\.0.matcher), free)
     var plan = Plan(moves: [], skipped: [], unchanged: 0)
+    // Every (window, target) pair is collected first, so the gap can be applied per screen before anything is compared.
+    var wanted: [(screen: String, window: WindowInfo, target: Frame)] = []
     for ((place, screen), window) in zip(places, match.assigned) {
         guard let w = window else { plan.skipped.append(place.matcher); continue }
         let exact = place.screenUUID == screen.uuid && place.visibleFrame == screen.visibleFrame
-        let target = exact ? place.pixel : place.fraction.frame(in: screen.visibleFrame).contained(in: screen.visibleFrame)
-        if close(w.frame, target) { plan.unchanged += 1 }
-        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
+        wanted.append((screen.uuid, w, exact ? place.pixel : place.fraction.frame(in: screen.visibleFrame).contained(in: screen.visibleFrame)))
     }
     var claimed = Set(match.assigned.compactMap { $0?.windowID })
+    func group(_ ws: [WindowInfo], in area: Frame, on screen: ScreenInfo) {
+        guard !ws.isEmpty else { return }
+        plan.tiles.append(ws.map(\.windowID))
+        for (w, target) in zip(ws, tile(ws.count, in: area)) { wanted.append((screen.uuid, w, target)) }
+    }
     for (zone, screen) in zoned {
         var mine: [WindowInfo] = []
         for member in zone.members {
@@ -76,41 +81,42 @@ public func planRestore(_ layouts: Layouts, windows: [WindowInfo], screens: [Scr
             mine += taken
             claimed.formUnion(taken.map(\.windowID))
         }
-        plan.tileIn(mine, zone.rect.frame(in: screen.visibleFrame))
+        group(mine, in: zone.rect.frame(in: screen.visibleFrame), on: screen)
     }
     for screen in automatic {
         let mine = free.filter { $0.screenUUID == screen.uuid && !claimed.contains($0.windowID) }
             .sorted { ($0.bundleID, $0.order, $0.windowID) < ($1.bundleID, $1.order, $1.windowID) }
         claimed.formUnion(mine.map(\.windowID))
         plan.tiles.append(mine.map(\.windowID))
-        for (w, target) in zip(mine, gridTile(mine.count, in: screen.visibleFrame)) {
-            if close(w.frame, target) { plan.unchanged += 1 }
-            else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
-        }
+        for (w, target) in zip(mine, gridTile(mine.count, in: screen.visibleFrame)) { wanted.append((screen.uuid, w, target)) }
     }
     for (rule, screen) in active {
-        plan.tileIn(windows.filter { $0.bundleID == rule.bundleID }.sorted { $0.order < $1.order },
-                    rule.area.frame(in: screen.visibleFrame))
+        group(windows.filter { $0.bundleID == rule.bundleID }.sorted { $0.order < $1.order }, in: rule.area.frame(in: screen.visibleFrame), on: screen)
+    }
+    // The gap goes between windows of one screen only, using that desktop's setting; a screen without room keeps none.
+    var gapped = Dictionary(uniqueKeysWithValues: wanted.indices.map { ($0, wanted[$0].target) })
+    for screen in Set(wanted.map(\.screen)) {
+        guard let desktop = desktops[screen] else { continue }
+        let gap = layouts.arrangeSettings(desktop: desktop, screen: screen).gapPoints
+        let indices = wanted.indices.filter { wanted[$0].screen == screen }
+        let result = applyGap(indices.map { wanted[$0].target }, gap: gap)
+        if result.skipped { plan.gapSkipped = true }
+        for (i, frame) in zip(indices, result.frames) { gapped[i] = frame }
+    }
+    for i in wanted.indices {
+        let w = wanted[i].window, target = gapped[i] ?? wanted[i].target
+        if close(w.frame, target) { plan.unchanged += 1 }
+        else { plan.moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
     }
     return plan
 }
 
-extension Plan {
-    /// Tiles the windows inside the area as one group (zone or rule): a new window re-tiles only its group.
-    mutating func tileIn(_ ws: [WindowInfo], _ area: Frame) {
-        guard !ws.isEmpty else { return }
-        tiles.append(ws.map(\.windowID))
-        for (w, target) in zip(ws, tile(ws.count, in: area)) {
-            if close(w.frame, target) { unchanged += 1 }
-            else { moves.append(Move(windowID: w.windowID, from: w.frame, to: target)) }
-        }
-    }
-}
-
 /// Splits a zone along its longer side into n equal parts. Edges are rounded once, so neighbours share them: no gap.
-public func tile(_ n: Int, in area: Frame) -> [Frame] {
+public func tile(_ n: Int, in area: Frame) -> [Frame] { tile(n, in: area, across: area.width >= area.height) }
+
+/// The same, along a chosen direction (the Columns and Rows presets).
+public func tile(_ n: Int, in area: Frame, across: Bool) -> [Frame] {
     guard n > 0, area.isValid else { return [] }
-    let across = area.width >= area.height
     let start = across ? area.x : area.y, length = across ? area.width : area.height
     let edges = (0...n).map { i in i == n ? start + length : (start + Double(i) * length / Double(n)).rounded() }
     return (0..<n).map { i in
