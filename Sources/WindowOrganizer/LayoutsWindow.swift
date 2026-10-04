@@ -231,7 +231,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let title = label("Make room for your ideas.", size: 28)
         let settings = NSButton(title: "Settings", target: self, action: #selector(showSettings))
         let advanced = NSButton(title: "Advanced…", target: self, action: #selector(showAdvanced))
-        let header = row([title, NSView(), advanced, settings])
+        let groups = NSButton(title: "Groups…", target: self, action: #selector(showGroups))
+        let header = row([title, NSView(), groups, advanced, settings])
         let stepOne = label("1  Choose your screen")
         screenCards.orientation = .horizontal; screenCards.spacing = 12
         let contextTip = label("Switch desktops in Mission Control. This app follows you.", size: 12, weight: .regular)
@@ -308,6 +309,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
     @objc func chooseScreen(_ button: NSButton) { screenPopUp.selectItem(at: button.tag); screenPicked() }
     @objc func showSettings() { SettingsWindow.show() }
+    @objc func showGroups() { GroupsWindow.show() }
     @objc func showAdvanced() { advancedWindow.center(); advancedWindow.makeKeyAndOrderFront(nil) }
     func stageWindow(_ id: Int, frame: Frame) {
         guard preview.editable, let context = previewContext, context == contextProvider() else { return }
