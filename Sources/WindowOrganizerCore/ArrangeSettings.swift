@@ -11,8 +11,13 @@ public struct ArrangeSettings: Codable, Equatable, Sendable {
     public var correctResize: Bool?
     public var sortByName: Bool?
     public var autoArrange: Bool?
+    /// SORT-MODE: the order the user arranged by hand, one snapshot matcher per window (app + title + order), so it
+    /// survives an app restart. Kept while the screen sorts by name, so switching back gives the user's order again.
+    public var manualOrder: [Matcher]?
 
-    public init(gap: Int? = nil, keepLive: Bool? = nil, pushBackOnTop: Bool? = nil, correctResize: Bool? = nil, sortByName: Bool? = nil, autoArrange: Bool? = nil) {
+    public init(gap: Int? = nil, keepLive: Bool? = nil, pushBackOnTop: Bool? = nil, correctResize: Bool? = nil, sortByName: Bool? = nil,
+                autoArrange: Bool? = nil, manualOrder: [Matcher]? = nil) {
+        self.manualOrder = manualOrder
         self.gap = gap; self.keepLive = keepLive; self.pushBackOnTop = pushBackOnTop
         self.correctResize = correctResize; self.sortByName = sortByName; self.autoArrange = autoArrange
     }
@@ -30,6 +35,7 @@ public struct ArrangeSettings: Codable, Equatable, Sendable {
     /// AUTO-MODE: an open or close re-arranges this screen as Restore would.
     public var arrangesAutomatically: Bool { autoArrange ?? false }
 
+    public static let maxManualOrder = 64
     public var isDefault: Bool { self == ArrangeSettings() }
 }
 
