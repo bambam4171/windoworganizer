@@ -111,7 +111,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         if SettingsWindow.shown?.window.isVisible == true { SettingsWindow.shown?.refresh() }
     }
     func windowCreated(_ element: AXUIElement, app: String, bundleID: String? = nil) {
-        let batch = LaunchBatch.current?.expects(bundleID) == true ? LaunchBatch.current : nil
+        let batch = LaunchBatch.owner(of: bundleID)
         guard Preferences.arrangeNewWindows || batch != nil, triggers.handle(.windowCreated) == .placeWindow else { return }
         let before = generation
         let desktops = displays().map(\.current)

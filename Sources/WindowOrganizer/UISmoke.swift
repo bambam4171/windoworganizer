@@ -507,6 +507,18 @@ func runUISmoke() -> Int32 {
             spin()
             return mover.sets.isEmpty && lines.count == 1 && lines[0].contains("stopped placing: the desktop changed") && batch?.finished == true
         })
+        check("a notification with the same desktop does not end the batch", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts); LaunchBatch.current?.cancel() }
+            lines = []; let mover = CountingMover()
+            let batch = LaunchBatch.begin([notes], scope: nil, launching(mover, Calls(), outcome: nil))
+            batch?.contextMayHaveChanged()
+            return batch?.finished == false && lines.isEmpty
+        })
+        check("only a window of an app the batch waits for belongs to the batch", {
+            try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts); LaunchBatch.current?.cancel() }
+            let batch = LaunchBatch.begin([notes], scope: nil, launching(CountingMover(), Calls(), outcome: nil))
+            return batch != nil && LaunchBatch.owner(of: notes) === batch && LaunchBatch.owner(of: "com.apple.Safari") == nil && LaunchBatch.owner(of: nil) == nil
+        })
         check("a missing or failing app is named in the final line", {
             try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts) }
             lines = []

@@ -77,6 +77,8 @@ final class LaunchBatch {
     }
 
     var startingNames: [String] { names.values.sorted() }
+    /// The live batch when it is waiting for a window of this app; any other window is an ordinary new window.
+    static func owner(of bundleID: String?) -> LaunchBatch? { current?.expects(bundleID) == true ? current : nil }
     func expects(_ bundleID: String?) -> Bool { !finished && bundleID.map { pending.contains($0) || windowed.contains($0) } == true }
 
     private func run(_ ids: [String]) {
