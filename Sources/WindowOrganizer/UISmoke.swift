@@ -902,6 +902,193 @@ func runUISmoke() -> Int32 {
             guard case .failed? = outcome else { return false }
             return blockedLiveLaunches == 1  // only the probe above
         })
+        // WO-GROUPS G2: the group list.
+        try? FileManager.default.removeItem(at: layoutStore().file)  // the corrupt-state check above left a broken file
+        var groupsDesktop = 1
+        var gdisplay = screen; gdisplay.uuid = "G-A"; gdisplay.name = "Studio display"
+        let gwin = [WindowInfo(windowID: 11, bundleID: "com.apple.Terminal", title: "Build", frame: Frame(x: 0, y: 25, width: 600, height: 775), screenUUID: "G-A", order: 0),
+                    WindowInfo(windowID: 12, bundleID: "com.apple.Terminal", title: "Logs", frame: Frame(x: 600, y: 25, width: 600, height: 775), screenUUID: "G-A", order: 1)]
+        func groupsWindow(_ disconnected: Bool = false) -> GroupsWindow {
+            GroupsWindow(context: { WorkspaceContext(screens: [gdisplay, screen], counts: ["G-A": 3, screen.uuid: 2], desktops: ["G-A": groupsDesktop, screen.uuid: 1]) },
+                         snapshot: { (ListReport(trusted: true, desktop: nil, screens: [gdisplay, screen], windows: gwin), Listing()) })
+        }
+        func loadGroups() throws -> [WindowGroup] { try layoutStore().load().groups }
+        func gline(_ g: GroupsWindow, _ i: Int) -> [NSView] { (g.rows.arrangedSubviews[i] as? NSStackView)?.arrangedSubviews ?? [] }
+        let termMember = ZoneMember(bundleID: "com.apple.Terminal"), logMember = ZoneMember(bundleID: "com.apple.Terminal", titlePattern: "Logs")
+        check("groups: the Groups… button opens the window and the rows are the stored groups in file order", {
+            var l = Layouts()
+            l.setGroup(WindowGroup(id: "g1", name: "Work", members: [termMember]))
+            l.setGroup(WindowGroup(id: "g2", name: "Mail", members: [logMember], screen: "G-A", desktops: [1, 3]))
+            try layoutStore().save(l)
+            let hasButton = editor.window.contentView.map { v -> Bool in
+                var found = false
+                func walk(_ x: NSView) { if let b = x as? NSButton, b.title == "Groups…" { found = true }; x.subviews.forEach(walk) }
+                walk(v); return found
+            } ?? false
+            GroupsWindow.shown = nil; GroupsWindow.show()
+            defer { GroupsWindow.shown?.window.close(); GroupsWindow.shown = nil }
+            guard let g = GroupsWindow.shown else { return false }
+            let names = (0..<g.rows.arrangedSubviews.count).compactMap { gline(g, $0).compactMap { $0 as? NSTextField }.first?.stringValue }
+            return hasButton && g.window.isVisible && names == ["Work", "Mail"]
+        })
+        check("groups: add + member + Save stores the group; a duplicate name is refused and the file stays byte-equal", {
+            try layoutStore().save(Layouts())
+            let g = groupsWindow()
+            g.addGroup(openMembers: false)
+            _ = g.addMember(0, bundleID: "com.apple.Terminal", pattern: nil)
+            g.save()
+            let one = try loadGroups()
+            g.addGroup(openMembers: false); _ = g.addMember(1, bundleID: "com.apple.Notes", pattern: nil)
+            g.rename(1, "group 1 ")
+            let before = try Data(contentsOf: layoutStore().file)
+            g.save()
+            let after = try Data(contentsOf: layoutStore().file)
+            return one.count == 1 && one[0].name == "Group 1" && one[0].members == [termMember] && one[0].screen == nil && one[0].mode == .tiled
+                && before == after && g.status.stringValue.contains("already called") && g.dirty
+        })
+        check("groups: a name is trimmed when typed and stored trimmed", {
+            try layoutStore().save(Layouts())
+            let g = groupsWindow(); g.addGroup(openMembers: false); _ = g.addMember(0, bundleID: "com.apple.Terminal", pattern: nil)
+            g.rename(0, "  Spaced out \n"); g.save()
+            return try loadGroups().map(\.name) == ["Spaced out"]
+        })
+        check("groups: a memberless group is dropped on Save with the count in the status", {
+            try layoutStore().save(Layouts())
+            let g = groupsWindow(); g.addGroup(openMembers: false); g.save()
+            return try loadGroups().isEmpty && g.status.stringValue.contains("1 group without apps was not saved") && !g.dirty
+        })
+        check("groups: removing a member of a saved group drops only its positions; the last one makes it tiled", {
+            var l = Layouts()
+            let pos = [GroupPosition(matcher: Matcher(bundleID: "com.apple.Terminal"), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 1)),
+                       GroupPosition(matcher: Matcher(bundleID: "com.apple.Terminal", titlePattern: "Logs"), fraction: UnitRect(x: 0.5, y: 0, width: 0.5, height: 1))]
+            l.setGroup(WindowGroup(id: "s", name: "Saved", members: [termMember, logMember], screen: "G-A", desktops: [1], mode: .saved(pos)))
+            try layoutStore().save(l)
+            let g = groupsWindow()
+            g.removeMember(0, 1); g.save()
+            guard let one = try loadGroups().first, case .saved(let left) = one.mode else { return false }
+            g.removeMember(0, 0); g.save()
+            let emptied = try loadGroups().isEmpty
+            return left.count == 1 && left[0].matcher.titlePattern == nil && one.members == [termMember] && emptied
+        })
+        check("groups: changing a member's title filter drops only that member's saved position, and says so", {
+            var l = Layouts()
+            let pos = [GroupPosition(matcher: Matcher(bundleID: "com.apple.Terminal"), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 1)),
+                       GroupPosition(matcher: Matcher(bundleID: "com.apple.Terminal", titlePattern: "Logs"), fraction: UnitRect(x: 0.5, y: 0, width: 0.5, height: 1))]
+            l.setGroup(WindowGroup(id: "p", name: "P", members: [termMember, logMember], screen: "G-A", desktops: [1], mode: .saved(pos)))
+            try layoutStore().save(l)
+            let g = groupsWindow()
+            _ = g.setPattern(0, 1, "Build")
+            guard case .saved(let left) = g.draft[0].mode else { return false }
+            let one = left.count == 1 && left[0].matcher.titlePattern == nil && g.status.stringValue.contains("dropped")
+            _ = g.setPattern(0, 0, "Other")
+            return one && g.draft[0].mode == .tiled && g.draft[0].members.map(\.titlePattern) == ["Other", "Build"]
+        })
+        check("groups: Not assigned clears the desktops and disables the pull-down; a disconnected stored screen is kept", {
+            var l = Layouts()
+            l.setGroup(WindowGroup(id: "a", name: "A", members: [termMember], screen: "G-A", desktops: [1, 3]))
+            l.setGroup(WindowGroup(id: "b", name: "B", members: [termMember], screen: "GONE", desktops: [2]))
+            try layoutStore().save(l)
+            let g = groupsWindow()
+            g.toggleDesktop(0, 2)
+            let toggled = g.draft[0].desktops == [1, 2, 3]
+            g.setScreen(0, nil)
+            let desks = gline(g, 0).compactMap { $0 as? NSPopUpButton }[1]
+            let cleared = g.draft[0].desktops.isEmpty && !desks.isEnabled
+            let gonePop = gline(g, 1).compactMap { $0 as? NSPopUpButton }[0]
+            g.toggleDesktop(1, 1); g.save()
+            let stored = try loadGroups()
+            return toggled && cleared && gonePop.titleOfSelectedItem == "Display not connected" && stored[1].screen == "GONE" && stored[1].desktops == [1, 2] && stored[0].screen == nil
+        })
+        check("groups: ▲▼ order is saved, Revert restores the loaded list, closing with changes asks", {
+            var l = Layouts()
+            for (id, n) in [("1", "One"), ("2", "Two"), ("3", "Three")] { l.setGroup(WindowGroup(id: id, name: n, members: [termMember])) }
+            try layoutStore().save(l)
+            let g = groupsWindow()
+            g.move(0, by: 1); g.move(2, by: 1)
+            let moved = g.draft.map(\.name) == ["Two", "One", "Three"]
+            g.save()
+            let saved = try loadGroups().map(\.name) == ["Two", "One", "Three"]
+            g.delete(0); g.revertTapped()
+            let reverted = g.draft.map(\.name) == ["Two", "One", "Three"] && !g.dirty
+            var asked = 0; g.confirmDiscard = { asked += 1; return false }
+            g.delete(1)
+            let refused = !g.windowShouldClose(g.window) && asked == 1
+            g.confirmDiscard = { asked += 1; return true }
+            let discarded = g.windowShouldClose(g.window) && asked == 2 && !g.dirty
+            return moved && saved && reverted && refused && discarded
+        })
+        check("groups: Capture works with injected windows, is disabled off-desktop, and refuses an empty capture", {
+            var l = Layouts()
+            l.setGroup(WindowGroup(id: "c", name: "C", members: [termMember, logMember], screen: "G-A", desktops: [2]))
+            l.setGroup(WindowGroup(id: "d", name: "D", members: [ZoneMember(bundleID: "no.such.app")], screen: "G-A", desktops: [2]))
+            try layoutStore().save(l)
+            groupsDesktop = 1
+            let g = groupsWindow()
+            let off = g.captureProblem(g.draft[0]) != nil
+            g.setMode(0, saved: true)
+            let offDisabled = !(gline(g, 0).compactMap { $0 as? NSButton }.first { $0.title == "Capture" }?.isEnabled ?? true)
+            g.setMode(0, saved: false)
+            groupsDesktop = 2
+            g.setMode(0, saved: true)
+            let pending = g.draft[0].mode == .tiled
+            g.capture(0)
+            guard case .saved(let positions) = g.draft[0].mode else { return false }
+            g.setMode(1, saved: true); g.capture(1)
+            let empty = g.draft[1].mode == .tiled && g.status.stringValue.contains("No window of this group is open on Studio display")
+            g.setMode(0, saved: false)
+            return off && offDisabled && pending && positions.count == 2 && empty && g.draft[0].mode == .tiled
+        })
+        check("groups: deleting every group leaves schema 2 with no groups key", {
+            var l = Layouts(); l.setGroup(WindowGroup(id: "z", name: "Z", members: [termMember])); try layoutStore().save(l)
+            let g = groupsWindow(); g.delete(0); g.save()
+            let text = String(decoding: try Data(contentsOf: layoutStore().file), as: UTF8.self)
+            return !text.contains("\"groups\"") && text.contains("\"schema\" : 2")
+        })
+        check("groups: a groups save keeps the snapshot, rules and settings; a layout save keeps the groups", {
+            var l = Layouts()
+            l.set(remember([w], on: screen), setup: setup, desktop: 1, screen: screen.uuid)
+            l.setRule(AppRule(bundleID: w.bundleID, desktop: 1, screen: screen.uuid, area: AppRule.full))
+            l.setGroup(WindowGroup(id: "k", name: "K", members: [termMember]))
+            try layoutStore().save(l)
+            let g = groupsWindow(); g.rename(0, "Kept"); g.save()
+            let after = try layoutStore().load()
+            let keptBy = after.groups.first?.name == "Kept" && after.rules.contains { $0.bundleID == w.bundleID } && after.arrangement(setup: setup, desktop: 1, screen: screen.uuid) != nil
+            editor.pick(); editor.ruleEdits[w.bundleID] = AppRule(bundleID: w.bundleID, desktop: 1, screen: screen.uuid, area: AppRule.full); editor.save()
+            let still = try loadGroups().first?.name == "Kept"
+            return keptBy && still
+        })
+        check("groups: an unreadable layout file disables Save and is not written", {
+            let corrupt = Data("broken".utf8); try corrupt.write(to: layoutStore().file)
+            let g = groupsWindow(); g.addGroup(openMembers: false); g.save()
+            let unchanged = try Data(contentsOf: layoutStore().file) == corrupt
+            return g.readFailed && !g.saveButton.isEnabled && unchanged
+        })
+        check("shots: groups-list (light, dark), groups-members, groups-refused, editor-header", {
+            try? FileManager.default.removeItem(at: layoutStore().file)
+            var l = Layouts()
+            l.setGroup(WindowGroup(id: "u", name: "Reading", members: [ZoneMember(bundleID: "com.apple.Safari")]))
+            l.setGroup(WindowGroup(id: "t", name: "Work", members: [termMember, logMember], screen: "G-A", desktops: [1, 3]))
+            l.setGroup(WindowGroup(id: "s", name: "Review", members: [termMember], screen: "GONE", desktops: [2],
+                                   mode: .saved([GroupPosition(matcher: Matcher(bundleID: "com.apple.Terminal"), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 1))])))
+            try layoutStore().save(l)
+            groupsDesktop = 1
+            let g = groupsWindow(); g.window.setContentSize(NSSize(width: 1100, height: 300))
+            for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                g.window.appearance = NSAppearance(named: appearance); g.window.contentView?.layoutSubtreeIfNeeded()
+                try shot(g.window, "groups-list-\(mode)")
+            }
+            g.rename(0, "work "); let members = g.membersView(1)
+            let host = NSWindow(contentRect: NSRect(origin: .zero, size: members.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
+            host.contentView = members
+            for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                for window in [g.window, editor.window, host] { window.appearance = NSAppearance(named: appearance); window.contentView?.layoutSubtreeIfNeeded() }
+                try shot(g.window, mode == "light" ? "groups-refused" : "groups-refused-dark")
+                try shot(editor.window, mode == "light" ? "editor-header" : "editor-header-dark")
+                try shot(host, mode == "light" ? "groups-members" : "groups-members-dark")
+            }
+            editor.window.appearance = nil
+            return true
+        })
         editor.window.close()
     } catch { print("FAIL UI setup: \(error)"); failed += 1 }
     print("UI: \(passed) passed / \(failed) failed")
