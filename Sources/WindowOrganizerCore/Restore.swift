@@ -238,6 +238,18 @@ public enum ResultLine {
         return "\(name(desktop)): \(parts.joined(separator: ", ")) · \(time)"
     }
 
+    /// After a group was applied (WO-GROUPS-G3): what moved now, and the desktops that follow on their next visit.
+    public static func group(_ name: String, _ r: ApplyResult?, later: [Int], desktop: Int?, at time: String) -> String {
+        var parts: [String] = []
+        if let r {
+            if r.cancelled > 0 { return "Stopped: the desktop changed. Group \(name): \(r.placed + r.keptMinimum) placed, \(r.cancelled) left as they were · \(time)" }
+            parts.append("\(plural(r.placed + r.unchanged + r.keptMinimum, "window")) placed")
+            if r.failed > 0 { parts.append("\(r.failed) could not be moved") }
+        } else { parts.append("not on this desktop") }
+        if !later.isEmpty { parts.append("Desktop\(later.count == 1 ? "" : "s") \(later.map(String.init).joined(separator: ", ")) on next visit") }
+        return "\(self.name(desktop)): Group \(name): \(parts.joined(separator: " · ")) · \(time)"
+    }
+
     /// The final line of a start-missing-apps batch (WO-LAUNCH-MISSING).
     public static func started(names: [String], placed: Int, late: [String] = [], failed: [String] = [], stopped: Bool = false,
                                desktop: Int?, at time: String) -> String {
