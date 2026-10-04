@@ -421,6 +421,43 @@ func runUISmoke() -> Int32 {
             return automatic == nil && newWindow == nil && mover.sets.isEmpty && menu.sets == [1] && viaMenu != nil
         })
         try backup.write(to: layoutStore().file)
+        check("Sort by name persists for this screen and desktop only", {
+            let before = try layoutStore().load()
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
+            guard editor.sortSwitch.state == .off, !editor.unsaved.contains("sort setting") else { return false }
+            editor.sortSwitch.state = .on; editor.sortToggled()
+            guard editor.unsaved.contains("sort setting") else { return false }
+            editor.applyAndSave()
+            let saved = try layoutStore().load()
+            let reloaded = editor.loadedSort && !editor.unsaved.contains("sort setting")
+            let other = saved.arrangeSettings(desktop: 2, screen: screen.uuid).sortsByName
+            let here = saved.arrangeSettings(desktop: 1, screen: screen.uuid).sortsByName
+            visibleDesktop = 2; editor.desktopPopUp.selectItem(at: 1); editor.pick()
+            let otherOff = editor.sortSwitch.state == .off
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.pick()
+            let backOn = editor.sortSwitch.state == .on
+            editor.sortSwitch.state = .off; editor.applyAndSave()
+            let cleared = try layoutStore().load().arrange.isEmpty
+            try layoutStore().save(before)
+            return reloaded && here && !other && otherOff && backOn && cleared
+        })
+        check("a sorted preset reads in name order", {
+            let named = [("Safari", 1), ("Mail", 2), ("Terminal", 3), ("Calendar", 4)].map { name, id in
+                WindowInfo(windowID: id, bundleID: "com.x.\(name)", title: "", frame: w.frame, screenUUID: screen.uuid, order: id, appName: name)
+            }
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick(); editor.previewMode.selectItem(at: 0)
+            editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: named), Listing()) }
+            let button = NSButton(title: "Grid", target: nil, action: nil); button.tag = 0
+            editor.sortSwitch.state = .off; editor.stagePreset(button)
+            let plain = editor.manualDraft?.map(\.windowID) == [1, 2, 3, 4] && !editor.result.stringValue.contains("sorted by name")
+            editor.sortSwitch.state = .on; editor.stagePreset(button)
+            let draft = editor.manualDraft ?? []
+            let ordered = draft.map(\.windowID) == [4, 2, 1, 3] && editor.result.stringValue.contains("sorted by name")
+            let reading = zip(draft, draft.dropFirst()).allSatisfy { ($0.frame.y, $0.frame.x) < ($1.frame.y, $1.frame.x) }
+            editor.sortSwitch.state = .off; editor.resetDraft()
+            editor.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
+            return plain && ordered && reading
+        })
         check("corrupt state disables Save and remains unchanged", {
             let corrupt = Data("broken".utf8); try corrupt.write(to: layoutStore().file); editor.pick(); editor.save()
             let after = try Data(contentsOf: layoutStore().file)
