@@ -36,6 +36,8 @@ final class LaunchBatch {
     /// The batch that is live; a new one ends it quietly.
     static var current: LaunchBatch?
     static var deadline: Duration = .seconds(20)
+    /// Where a batch's final line goes (the menu's result line); a check replaces it.
+    static var deliver: (String) -> Void = { _ in }
 
     private let providers: WorkspaceProviders
     private let scope: WorkspaceSelection?
@@ -53,7 +55,7 @@ final class LaunchBatch {
 
     /// Starts `ids` and returns the batch (nil when there is nothing to start). `report` gets the final line.
     @discardableResult
-    static func begin(_ ids: [String], scope: WorkspaceSelection?, _ p: WorkspaceProviders = .live, report: @escaping (String) -> Void) -> LaunchBatch? {
+    static func begin(_ ids: [String], scope: WorkspaceSelection?, _ p: WorkspaceProviders = .live, report: @escaping (String) -> Void = { LaunchBatch.deliver($0) }) -> LaunchBatch? {
         current?.cancel()
         guard !ids.isEmpty else { return nil }
         let batch = LaunchBatch(ids, scope: scope, p, report: report)
@@ -133,4 +135,13 @@ final class LaunchBatch {
     }
 
     private func desktopNumber() -> Int? { providers.snapshot().0.desktop?.number }
+}
+
+/// The apps to start for `trigger`, or [] when its switch is off or `trigger` is nil. Starts a batch and returns their names.
+@MainActor
+func startMissingApps(_ trigger: LaunchTrigger?, layouts: Layouts, report: ListReport, desktops: [String: Int],
+                      scope: WorkspaceSelection? = nil, _ p: WorkspaceProviders = .live) -> [String] {
+    guard let trigger, Preferences.startsMissing(trigger) else { return [] }
+    let ids = appsToStart(layouts, screens: report.screens, desktops: desktops, scope: scope, running: p.running())
+    return LaunchBatch.begin(ids, scope: scope, p)?.startingNames ?? []
 }

@@ -36,6 +36,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     var permissionTimer: Timer?
     var wasTrusted = false
     var generation = 0
+    var knownScreens: Set<String> = Set(currentScreens().map(\.uuid))
 
     override init() {
         super.init()
@@ -48,10 +49,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
             lastResult = "Shortcut \(Preferences.shortcut.display) is already in use. Choose another in Settings."
         }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.activeSpaceDidChangeNotification) { [weak self] in
-            guard let self else { return }; self.generation += 1; LayoutsWindow.shown?.workspaceDidChange(); self.trigger(.spaceChanged(displays: self.displays()))
+            guard let self else { return }; self.generation += 1; LaunchBatch.current?.contextMayHaveChanged(); LayoutsWindow.shown?.workspaceDidChange(); self.trigger(.spaceChanged(displays: self.displays()))
         }
         observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { [weak self] in
-            guard let self else { return }; self.generation += 1
+            guard let self else { return }; self.generation += 1; LaunchBatch.current?.contextMayHaveChanged()
             // Geometry changes matter even if the display UUIDs stayed the same.
             LayoutsWindow.shown?.workspaceDidChange()
             self.scheduleScreens()
@@ -61,6 +62,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.didWakeNotification) { [weak self] in
             self?.refreshPermission(); self?.scheduleScreens()
         }
+        LaunchBatch.deliver = { [weak self] in self?.lastResult = $0 }
         refreshPermission()
         trigger(.start(screens: currentScreens().map(\.uuid), displays: displays()))
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -103,19 +105,27 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     }
     func refreshPermission() {
         let trusted = Permission.trusted
-        if trusted, !wasTrusted { watcher = WindowWatcher { [weak self] element, app in self?.windowCreated(element, app: app) } }
+        if trusted, !wasTrusted { watcher = WindowWatcher { [weak self] element, app, bundle in self?.windowCreated(element, app: app, bundleID: bundle) } }
         if !trusted, wasTrusted { watcher?.stop(); watcher = nil; generation += 1 }
         wasTrusted = trusted
         if SettingsWindow.shown?.window.isVisible == true { SettingsWindow.shown?.refresh() }
     }
-    func windowCreated(_ element: AXUIElement, app: String) {
-        guard Preferences.arrangeNewWindows, triggers.handle(.windowCreated) == .placeWindow else { return }
+    func windowCreated(_ element: AXUIElement, app: String, bundleID: String? = nil) {
+        let batch = LaunchBatch.current?.expects(bundleID) == true ? LaunchBatch.current : nil
+        guard Preferences.arrangeNewWindows || batch != nil, triggers.handle(.windowCreated) == .placeWindow else { return }
         let before = generation
         let desktops = displays().map(\.current)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
-            guard let self, self.generation == before, !self.triggers.paused, Preferences.arrangeNewWindows,
-                  self.displays().map(\.current) == desktops else { return }
+            guard let self, self.generation == before, !self.triggers.paused, self.displays().map(\.current) == desktops else {
+                batch?.contextMayHaveChanged(); return
+            }
+            if let batch, !batch.finished, let bundleID {
+                // A window of a started app: placed even with new-window placing off; Undo still reverts the Restore.
+                if let (r, _) = placeNew(element, recordUndo: false) { batch.windowPlaced(bundleID: bundleID, result: r) }
+                return
+            }
+            guard Preferences.arrangeNewWindows, LaunchBatch.current == nil else { return }
             if let line = placeNewWindow(element, app: app) { self.lastResult = line }
         }
     }
@@ -125,7 +135,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     }
     func scheduleScreens() {
         settle?.cancel()
-        guard Preferences.restoreOnScreens, !triggers.paused else { return }
+        guard Preferences.restoreOnScreens, !triggers.paused else { knownScreens = Set(currentScreens().map(\.uuid)); return }
         settle = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled, let self, Preferences.restoreOnScreens, !self.triggers.paused else { return }
@@ -134,12 +144,22 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
     }
     func trigger(_ event: TriggerEvent) {
         let action = triggers.handle(event)
+        var plugged = false
+        if case .screensSettled = event {
+            let now = Set(currentScreens().map(\.uuid))
+            plugged = gainedScreen(previous: knownScreens, current: now); knownScreens = now
+        }
         let permitted: Bool
         if case .start = event { permitted = Preferences.restoreAtLaunch }
         else { permitted = Preferences.restoreOnScreens }
         switch action {
         case .none, .placeWindow, .autoCheck: break  // .autoCheck is wired in AUTO-MODE S2
-        case .arrange: if permitted, let line = restoreNow(automatic: true) { lastResult = line }
+        case .arrange:
+            // Only a start (login switch) or a screen that was not there at the previous settle may start apps.
+            var launch: LaunchTrigger?
+            if case .start = event { launch = .login }
+            if plugged { launch = .screenPlug }
+            if permitted, let line = restoreNow(automatic: true, launch: launch) { lastResult = line }
         case .settle: scheduleScreens()
         }
     }
@@ -171,7 +191,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         let quit = NSMenuItem(title: "Quit Window Organizer", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp; menu.addItem(quit)
     }
-    @objc func restore() { lastResult = restoreNow() }
+    @objc func restore() { lastResult = restoreNow(launch: .restore) }
     @objc func remember() { lastResult = rememberNow() }
     @objc func undo() { lastResult = RestoreSession.shared.undo() }
     @objc func togglePause() {
