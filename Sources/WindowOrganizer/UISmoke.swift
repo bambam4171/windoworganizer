@@ -1061,14 +1061,16 @@ func runUISmoke() -> Int32 {
                 g.window.appearance = NSAppearance(named: appearance); g.window.contentView?.layoutSubtreeIfNeeded()
                 try shot(g.window, "groups-list-\(mode)")
             }
-            g.window.appearance = NSAppearance(named: .aqua)
-            g.rename(0, "work "); g.window.contentView?.layoutSubtreeIfNeeded()
-            try shot(g.window, "groups-refused")
-            g.window.appearance = NSAppearance(named: .darkAqua); try shot(editor.window, "editor-header-dark"); editor.window.appearance = nil
-            try shot(editor.window, "editor-header")
-            let members = g.membersView(1); let host = NSWindow(contentRect: NSRect(origin: .zero, size: members.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
-            host.contentView = members; host.contentView?.layoutSubtreeIfNeeded()
-            try shot(host, "groups-members")
+            g.rename(0, "work "); let members = g.membersView(1)
+            let host = NSWindow(contentRect: NSRect(origin: .zero, size: members.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
+            host.contentView = members
+            for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                for window in [g.window, editor.window, host] { window.appearance = NSAppearance(named: appearance); window.contentView?.layoutSubtreeIfNeeded() }
+                try shot(g.window, mode == "light" ? "groups-refused" : "groups-refused-dark")
+                try shot(editor.window, mode == "light" ? "editor-header" : "editor-header-dark")
+                try shot(host, mode == "light" ? "groups-members" : "groups-members-dark")
+            }
+            editor.window.appearance = nil
             return true
         })
         editor.window.close()
