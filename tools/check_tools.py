@@ -41,6 +41,9 @@ class MakeAppChecks(unittest.TestCase):
         self.assertEqual(info['CFBundleExecutable'], 'WindowOrganizer')
         self.assertEqual(info['CFBundleShortVersionString'], '0.2')
         self.assertIs(info['LSUIElement'], True)
+        self.assertEqual(info['CFBundleVersion'], '8')
+        self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
+        self.assertIs(info['NSHighResolutionCapable'], True)
 
     def test_identity_is_used_when_listed_else_ad_hoc(self):
         self.assertEqual(make_app.choose_identity(LISTING_WITH), 'WindowOrganizer Local')

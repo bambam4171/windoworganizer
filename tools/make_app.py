@@ -1,6 +1,6 @@
 """Bundle and sign WindowOrganizer.app (WO-S2, plan §5).
 
-    /usr/bin/python3 tools/make_app.py [--app PATH] [--version 0.2]
+    /usr/bin/python3 tools/make_app.py [--app PATH] [--version 1.4.1] [--identity NAME] [--skip-build] [--build-dir DIR]
 
 macOS ties the "Device Control and Data Access" grant to the app's signature. An ad-hoc signature is a hash of one
 build, so every rebuild needs a new grant (spike limit 2). When the local identity "WindowOrganizer Local" exists
@@ -26,6 +26,9 @@ PLIST = '''<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleExecutable</key><string>WindowOrganizer</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>%(version)s</string>
+<key>CFBundleVersion</key><string>8</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>NSHighResolutionCapable</key><true/>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 </dict></plist>
@@ -55,18 +58,33 @@ def bundle(binary, app, version):
         exe.unlink()
     shutil.copy2(binary, exe)
     (Path(app) / 'Contents' / 'Info.plist').write_text(info_plist(version))
+    icon = ROOT / 'Resources/AppIcon.icns'
+    if icon.exists():
+        resources = Path(app) / 'Contents' / 'Resources'
+        resources.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icon, resources / icon.name)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--app', type=Path, default=APP)
-    ap.add_argument('--version', default='0.2')
+    ap.add_argument('--version', default='1.4.1')
+    ap.add_argument('--identity', help='codesign identity; default: "%s" when listed, else ad hoc' % IDENTITY)
+    ap.add_argument('--skip-build', action='store_true')
+    ap.add_argument('--build-dir', type=Path, default=ROOT / '.build')
     args = ap.parse_args()
-    subprocess.run(['swift', 'build', '-c', 'release', '--product', 'WindowOrganizer'], cwd=ROOT, check=True)
-    bundle(ROOT / '.build' / 'release' / 'WindowOrganizer', args.app, args.version)
-    listing = subprocess.run(['security', 'find-identity', '-v', '-p', 'codesigning'],
-                             capture_output=True, text=True).stdout
-    identity = choose_identity(listing)
+    if not args.skip_build:
+        subprocess.run(['swift', 'build', '--scratch-path', str(args.build_dir), '-c', 'release',
+                        '--product', 'WindowOrganizer'], cwd=ROOT, check=True)
+    bundle(args.build_dir / 'release' / 'WindowOrganizer', args.app, args.version)
+    if args.identity:
+        identity = args.identity
+    else:
+        listing = subprocess.run(['security', 'find-identity', '-v', '-p', 'codesigning'],
+                                 capture_output=True, text=True).stdout
+        identity = choose_identity(listing)
+    for attribute in ('com.apple.FinderInfo', 'com.apple.ResourceFork'):
+        subprocess.run(['/usr/bin/xattr', '-dr', attribute, str(args.app)], check=True, capture_output=True)
     subprocess.run(sign_command(args.app, identity), check=True, capture_output=True)
     req = subprocess.run(['/usr/bin/codesign', '--display', '--requirements', '-', str(args.app)],
                          capture_output=True, text=True).stdout.strip()
