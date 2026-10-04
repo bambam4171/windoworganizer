@@ -33,9 +33,19 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     let workflowStatus = NSTextField(labelWithString: "")
     let primaryButton = NSButton(title: "Save layout", target: nil, action: nil)
     let resetDraftButton = NSButton(title: "Reset", target: nil, action: nil)
-    /// SORT-BY-NAME: pending until Apply & Save; `loadedSort` is what the file holds for the picked screen and desktop.
+    /// WINDOW-GAP S2: the settings of the picked screen and desktop. `loadedSettings` is what the file holds, `draftSettings`
+    /// what the controls say; an untouched field stays nil so it keeps following the default. Pending until Apply & Save.
     let sortSwitch = NSButton(checkboxWithTitle: "Sort by app name", target: nil, action: nil)
-    var loadedSort = false
+    let gapField = NSTextField(string: "0")
+    let gapStepper = NSStepper()
+    let keepLiveSwitch = NSButton(checkboxWithTitle: "Keep live", target: nil, action: nil)
+    let pushBackSwitch = NSButton(checkboxWithTitle: "Push back when dropped on top", target: nil, action: nil)
+    let resizeSwitch = NSButton(checkboxWithTitle: "Also when resizing", target: nil, action: nil)
+    let liveHint = NSTextField(labelWithString: "Turn on Keep live to use these.")
+    var loadedSettings = ArrangeSettings()
+    var draftSettings = ArrangeSettings()
+    var lastPreset: NSButton?
+    var settingRows: [NSView] = []
     let advancedWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
     var manualDraft: [WindowInfo]?
     var draftContext: WorkspaceContext?
@@ -234,7 +244,19 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         visibleButton.title = "Use current desktop"
         sortSwitch.target = self; sortSwitch.action = #selector(sortToggled)
         sortSwitch.toolTip = "Windows fill the tiles in app-name order. Applies to Grid, Columns, Rows and automatic tiling on this screen and desktop."
-        let toolbar = row(presets + [resetDraftButton, sortSwitch, NSView(), visibleButton, permissionButton])
+        gapStepper.minValue = 0; gapStepper.maxValue = Double(ArrangeSettings.maxGap); gapStepper.increment = 1; gapStepper.valueWraps = false
+        gapStepper.target = self; gapStepper.action = #selector(gapStepped)
+        gapField.target = self; gapField.action = #selector(gapTyped); gapField.alignment = .right
+        gapField.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        for control in [keepLiveSwitch, pushBackSwitch, resizeSwitch] { control.target = self; control.action = #selector(sortToggled) }
+        liveHint.font = .systemFont(ofSize: 12); liveHint.textColor = .secondaryLabelColor
+        let scope = "For the selected screen and desktop only."
+        for control in [gapField, gapStepper, keepLiveSwitch, pushBackSwitch, resizeSwitch] { control.toolTip = scope }
+        gapField.toolTip = "Points between neighbouring windows (0 to \(ArrangeSettings.maxGap)). " + scope
+        let toolbar = row(presets + [resetDraftButton, NSView(), visibleButton, permissionButton])
+        let gapLine = row([label("Gap", size: 13, weight: .regular), gapField, gapStepper, label("pt", size: 13, weight: .regular), sortSwitch])
+        let liveLine = row([keepLiveSwitch, pushBackSwitch, resizeSwitch, liveHint])
+        settingRows = [gapLine, liveLine]
         preview.changed = { [weak self] id, frame in self?.stageWindow(id, frame: frame) }
         preview.toolTip = "Drag a window card to move it. Drag its bottom-right corner to resize. Changes apply when you choose Apply & Save."
         primaryButton.target = self; primaryButton.action = #selector(applyAndSave)
@@ -247,7 +269,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         result.maximumNumberOfLines = 2; result.lineBreakMode = .byTruncatingTail
         result.font = .systemFont(ofSize: 12); result.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         previewCaption.font = .systemFont(ofSize: 12)
-        let root = NSStackView(views: [header, stepOne, screenCards, contextTip, arrangeHeader, toolbar, preview, previewCaption, footer, result])
+        let root = NSStackView(views: [header, stepOne, screenCards, contextTip, arrangeHeader, toolbar, gapLine, liveLine, preview, previewCaption, footer, result])
         root.orientation = .vertical; root.alignment = .leading; root.spacing = 15
         root.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 20, right: 28)
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -296,17 +318,51 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             guard let screen else { throw WorkspaceError.screenDisconnected }
             let found = report.windows.filter { $0.screenUUID == selection.screenUUID }
             guard !found.isEmpty else { throw WorkspaceError.noWindows }
-            let sorted = sortSwitch.state == .on
-            let current = arrangeOrder(found, settings: ArrangeSettings(sortByName: sorted ? true : nil))
-            let frames = presetFrames([.grid, .columns, .rows][min(max(button.tag, 0), 2)], count: current.count, in: screen.visibleFrame)
+            let sorted = draftSettings.sortsByName
+            let current = arrangeOrder(found, settings: draftSettings)
+            let (frames, noRoom) = applyGap(presetFrames([.grid, .columns, .rows][min(max(button.tag, 0), 2)], count: current.count, in: screen.visibleFrame),
+                                            gap: draftSettings.gapPoints)
+            lastPreset = button
             var draft = current
             for i in draft.indices { draft[i].frame = frames[i] }
             liveWindows = current; previewContext = context; previewMessage = listing.warnings.joined(separator: " ")
             manualDraft = draft; draftContext = context; refreshWorkspaceStatus()
-            result.stringValue = "\(button.title) preview · \(draft.count) windows\(sorted ? " · sorted by name" : "") · Adjust, then Apply & Save."
+            let gapNote = draftSettings.gapPoints == 0 ? "" : noRoom ? " · gap skipped: no room" : " · gap \(draftSettings.gapPoints) pt"
+            result.stringValue = "\(button.title) preview · \(draft.count) windows\(sorted ? " · sorted by name" : "")\(gapNote) · Adjust, then Apply & Save."
         } catch { result.stringValue = "Preview unavailable: \(error)" }
     }
-    @objc func sortToggled() { refreshWorkspaceStatus() }
+    /// Every settings control ends here: the controls become `draftSettings`, a staged preset redraws at once.
+    @objc func sortToggled() {
+        let gap = min(max(Int(gapField.stringValue.trimmingCharacters(in: .whitespaces)) ?? loadedSettings.gapPoints, 0), ArrangeSettings.maxGap)
+        var next = draftSettings
+        next.gap = gap == 0 ? nil : gap
+        next.sortByName = sortSwitch.state == .on ? true : nil
+        let live = keepLiveSwitch.state == .on
+        // Only a touched Keep live is stored; one that agrees with the default for this gap stays nil.
+        if live != draftSettings.isLive || draftSettings.keepLive != nil { next.keepLive = live == (gap > 0) ? nil : live }
+        next.pushBackOnTop = pushBackSwitch.state == .on ? true : nil
+        next.correctResize = resizeSwitch.state == .on ? nil : false
+        draftSettings = next
+        showControls()
+        if manualDraft != nil, let lastPreset { stagePreset(lastPreset) } else { refreshWorkspaceStatus() }
+    }
+    @objc func gapStepped() { gapField.integerValue = gapStepper.integerValue; sortToggled() }
+    @objc func gapTyped() { sortToggled() }
+    /// The controls show `draftSettings`; the two lower switches only work with Keep live.
+    func showControls() {
+        let d = draftSettings
+        gapField.integerValue = d.gapPoints; gapStepper.integerValue = d.gapPoints
+        sortSwitch.state = d.sortsByName ? .on : .off
+        keepLiveSwitch.state = d.isLive ? .on : .off
+        pushBackSwitch.state = d.pushesBackOnTop ? .on : .off
+        resizeSwitch.state = d.correctsResize ? .on : .off
+        pushBackSwitch.isEnabled = d.isLive; resizeSwitch.isEnabled = d.isLive; liveHint.isHidden = d.isLive
+    }
+    /// " · gap 8 pt · sorted by name · keep live on" for the result line.
+    var settingsSummary: String {
+        let d = loadedSettings
+        return (d.gapPoints > 0 ? " · gap \(d.gapPoints) pt" : "") + (d.sortsByName ? " · sorted by name" : "") + (d.isLive ? " · keep live on" : "")
+    }
     @objc func refreshCurrentWindows() {
         do {
             let (selection, report, listing, context) = try workspaceSnapshot(allowPartial: true)
@@ -319,10 +375,14 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             result.stringValue = "Refreshed · \(liveWindows.count) windows · Live positions reloaded."
         } catch { result.stringValue = "Refresh unavailable: \(error)" }
     }
-    @objc func resetDraft() { manualDraft = nil; draftContext = nil; result.stringValue = ""; refreshLivePreview(); refreshWorkspaceStatus() }
+    @objc func resetDraft() { manualDraft = nil; draftContext = nil; lastPreset = nil; result.stringValue = ""; refreshLivePreview(); refreshWorkspaceStatus() }
     @objc func applyAndSave() {
-        // A sort-only change writes the setting alone: capturing the live windows would overwrite the layout and clear the rules (Z-380).
-        if manualDraft == nil, unsaved == ["sort setting"] { save(); refreshWorkspaceStatus(); return }
+        // A settings-only change writes the settings alone: capturing the live windows would overwrite the layout and clear the rules (Z-380).
+        if manualDraft == nil, unsaved == ["gap settings"] {
+            save()
+            if unsaved.isEmpty, let screen { result.stringValue = "✓ Settings saved · \(screen.name), \(desktopName)" + settingsSummary }
+            refreshWorkspaceStatus(); return
+        }
         guard let draft = manualDraft else { saveCurrentArrangement(); previewMode.selectItem(at: 0); updatePreview(); refreshWorkspaceStatus(); return }
         guard !advancedPending else {
             result.stringValue = "Not applied: Advanced has unsaved changes for this desktop. Save or discard them first."; return
@@ -353,7 +413,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             refreshSnapshotRows(); refresh()
             previewMode.selectItem(at: 0); updatePreview()
             assert(unsaved.isEmpty)
-            result.stringValue = "✓ Layout saved · \(screen.name), \(desktopName)" + (applied.keptMinimum > 0 ? " · Some apps kept their minimum size." : "")
+            result.stringValue = "✓ Layout saved · \(screen.name), \(desktopName)" + settingsSummary + (applied.keptMinimum > 0 ? " · Some apps kept their minimum size." : "")
             refreshWorkspaceStatus()
         } catch { result.stringValue = "Not saved: \(error)" }
     }
@@ -394,7 +454,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         if manualDraft != nil { u.append("canvas preview") }
         if advancedPending { u.append("Advanced arrangement") }
         if !ruleEdits.isEmpty { u.append("app rules") }
-        if (sortSwitch.state == .on) != loadedSort { u.append("sort setting") }
+        if draftSettings != loadedSettings { u.append("gap settings") }
         return u
     }
     var dirty: Bool { !unsaved.isEmpty }
@@ -620,8 +680,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         case nil: loadedMode = 0
         }
         loadedPlacements = placements; mode.selectItem(at: loadedMode)
-        loadedSort = layouts.arrangeSettings(desktop: desktopNumber, screen: screen.uuid).sortsByName
-        sortSwitch.state = loadedSort ? .on : .off
+        loadedSettings = layouts.arrangeSettings(desktop: desktopNumber, screen: screen.uuid)
+        draftSettings = loadedSettings; lastPreset = nil; showControls()
         selectedScreen = screenPopUp.indexOfSelectedItem; selectedDesktop = desktopPopUp.indexOfSelectedItem
         liveWindows = []; previewContext = nil
         refreshSnapshotRows()
@@ -637,19 +697,14 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let store = layoutStore()
         var fresh = try store.load()
         edit(&fresh)
-        let sorted = sortSwitch.state == .on
-        if sorted != loadedSort {
-            var settings = fresh.arrangeSettings(desktop: desktop, screen: screenUUID)
-            settings.sortByName = sorted ? true : nil
-            fresh.setArrangeSettings(settings, desktop: desktop, screen: screenUUID)
-        }
+        if draftSettings != loadedSettings { fresh.setArrangeSettings(draftSettings, desktop: desktop, screen: screenUUID) }
         for (app, rule) in ruleEdits { if let rule { fresh.setRule(rule) } else { fresh.removeRule(app) } }
         for rule in fresh.rules where rule.screen == screenUUID && rule.desktop == desktop && apps.contains(rule.bundleID) { fresh.removeRule(rule.bundleID) }
         try FileManager.default.createDirectory(at: store.file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try store.save(fresh)
         layouts = fresh
         ruleEdits = [:]
-        loadedSort = sorted
+        loadedSettings = draftSettings
     }
 
     @objc func save() {
