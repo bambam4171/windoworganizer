@@ -421,6 +421,22 @@ func runUISmoke() -> Int32 {
             return automatic == nil && newWindow == nil && mover.sets.isEmpty && menu.sets == [1] && viaMenu != nil
         })
         try backup.write(to: layoutStore().file)
+        check("settings-only save keeps the layout and rules", {
+            let before = try layoutStore().load()
+            visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()
+            editor.ruleEdits[w.bundleID] = AppRule(bundleID: w.bundleID, desktop: 1, screen: screen.uuid, area: AppRule.full)
+            editor.save()
+            let seeded = try layoutStore().load()
+            editor.sortSwitch.state = .on; editor.sortToggled()
+            guard editor.unsaved == ["sort setting"] else { return false }
+            editor.applyAndSave()
+            let after = try layoutStore().load()
+            try layoutStore().save(before)
+            editor.sortSwitch.state = .off; editor.pick()
+            return after.rules == seeded.rules && !after.rules.isEmpty
+                && after.arrangement(setup: setup, desktop: 1, screen: screen.uuid) == seeded.arrangement(setup: setup, desktop: 1, screen: screen.uuid)
+                && after.arrangeSettings(desktop: 1, screen: screen.uuid).sortsByName
+        })
         check("Sort by name persists for this screen and desktop only", {
             let before = try layoutStore().load()
             visibleDesktop = 1; editor.desktopPopUp.selectItem(at: 0); editor.accessProvider = { true }; editor.pick()

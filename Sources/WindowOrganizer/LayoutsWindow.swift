@@ -321,6 +321,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
     @objc func resetDraft() { manualDraft = nil; draftContext = nil; result.stringValue = ""; refreshLivePreview(); refreshWorkspaceStatus() }
     @objc func applyAndSave() {
+        // A sort-only change writes the setting alone: capturing the live windows would overwrite the layout and clear the rules (Z-380).
+        if manualDraft == nil, unsaved == ["sort setting"] { save(); refreshWorkspaceStatus(); return }
         guard let draft = manualDraft else { saveCurrentArrangement(); previewMode.selectItem(at: 0); updatePreview(); refreshWorkspaceStatus(); return }
         guard !advancedPending else {
             result.stringValue = "Not applied: Advanced has unsaved changes for this desktop. Save or discard them first."; return
