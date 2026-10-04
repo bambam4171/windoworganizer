@@ -203,6 +203,17 @@ public func applyPlan(_ plan: Plan, mover: WindowMover, stillValid: () -> Bool =
     return r
 }
 
+/// The app names of the windows `applyPlan` had to move inside their screen, once each, in order.
+public func shiftedApps(_ r: ApplyResult, in windows: [WindowInfo]) -> [String] {
+    var names: [String] = []
+    for id in r.shiftedIDs {
+        guard let w = windows.first(where: { $0.windowID == id }) else { continue }
+        let name = w.appName ?? w.bundleID
+        if !names.contains(name) { names.append(name) }
+    }
+    return names
+}
+
 /// The menu's last-result line (plan §4): what happened, on which desktop, when.
 public enum ResultLine {
     public static func restored(_ r: ApplyResult, starting: [String] = [], shifted: [String] = [], desktop: Int?, at time: String) -> String {

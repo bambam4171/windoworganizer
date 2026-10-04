@@ -120,7 +120,8 @@ func restoreNow(automatic: Bool = false, launch: LaunchTrigger? = nil, _ p: Work
             if !starting.isEmpty { return ResultLine.restored(ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0), starting: starting, desktop: desktop, at: clock()) }
             return automatic ? nil : ResultLine.nothingRemembered(desktop: desktop, at: clock())
         }
-        return ResultLine.restored(RestoreSession.shared.apply(plan, listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx }), starting: starting, desktop: desktop, at: clock())
+        let applied = RestoreSession.shared.apply(plan, listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx })
+        return ResultLine.restored(applied, starting: starting, shifted: shiftedApps(applied, in: report.windows), desktop: desktop, at: clock())
     } catch {
         return "Not restored: \(error)"
     }
