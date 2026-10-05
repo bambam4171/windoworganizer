@@ -201,9 +201,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSApplicationDelegate {
         if let line = applyGroupNow(id) { lastResult = line }
     }
     @objc func restore() {
-        let desktops = WorkspaceContext.live().desktops
-        GroupState.session.clear(desktops.map { GroupKey(screen: $0.key, desktop: $0.value) })
-        lastResult = restoreNow(launch: .restore)
+        lastResult = restoreFromMenu()
     }
     @objc func remember() { lastResult = rememberNow() }
     @objc func undo() { lastResult = RestoreSession.shared.undo() }

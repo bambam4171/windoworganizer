@@ -427,6 +427,15 @@ func runUISmoke() -> Int32 {
             return plain?.contains("placed") == true && control.frames[1] == layoutPlace
                 && line?.contains("placed") == true && grouped.frames[1] == screen.visibleFrame && grouped.frames[1] != layoutPlace
         })
+        check("Groups: an explicit Restore drops the applied group, then a new window goes by the layout again", {
+            defer { GroupState.session = GroupSession(); try? layoutStore().save(guardLayouts) }
+            var gl = guardLayouts; try gl.setGroup(termGroup); try layoutStore().save(gl)
+            GroupState.session = GroupSession(); GroupState.session.apply(termGroup, desktops: [screen.uuid: 1])
+            let restored = restoreFromMenu(fake(CountingMover(), flipAt: nil)) ?? ""
+            let after = CountingMover()
+            let line = placeNewWindow(fakeElement, app: "Terminal", fake(after, flipAt: nil))
+            return restored.contains("placed") && GroupState.session.isEmpty && line?.contains("placed") == true && after.frames[1] == Frame(x: 10, y: 35, width: 500, height: 600)
+        })
         check("Groups: the editor guard and the desktop guard still come first for a grouped new window", {
             defer { GroupState.session = GroupSession(); try? layoutStore().save(guardLayouts) }
             var gl = guardLayouts; try gl.setGroup(termGroup); try layoutStore().save(gl)
