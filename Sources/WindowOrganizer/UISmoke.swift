@@ -411,6 +411,30 @@ func runUISmoke() -> Int32 {
             let placed = placeNewWindow(fakeElement, app: "Terminal", fake(right, flipAt: nil))
             return wrong == nil && mover.sets.isEmpty && placed?.contains("placed") == true && right.sets == [1]
         })
+        // WO-GROUPS G4: a new window of an applied group goes to the group's place, on the same providers.
+        let notesGroup = WindowGroup(id: "g-notes", name: "Notes", members: [ZoneMember(bundleID: "com.apple.Notes")], screen: screen.uuid, desktops: [1])
+        let termGroup = WindowGroup(id: "g-term", name: "Term", members: [ZoneMember(bundleID: w.bundleID)], screen: screen.uuid, desktops: [1])
+        check("Groups: a new window of an applied group goes to the group's place, not the layout's", {
+            defer { GroupState.session = GroupSession(); try? layoutStore().save(guardLayouts) }
+            var gl = guardLayouts; try gl.setGroup(termGroup); try layoutStore().save(gl)
+            GroupState.session = GroupSession()
+            let control = CountingMover()
+            let plain = placeNewWindow(fakeElement, app: "Terminal", fake(control, flipAt: nil))
+            GroupState.session.apply(termGroup, desktops: [screen.uuid: 1])
+            let grouped = CountingMover()
+            let line = placeNewWindow(fakeElement, app: "Terminal", fake(grouped, flipAt: nil))
+            let layoutPlace = Frame(x: 10, y: 35, width: 500, height: 600)
+            return plain?.contains("placed") == true && control.frames[1] == layoutPlace
+                && line?.contains("placed") == true && grouped.frames[1] == screen.visibleFrame && grouped.frames[1] != layoutPlace
+        })
+        check("Groups: the editor guard and the desktop guard still come first for a grouped new window", {
+            defer { GroupState.session = GroupSession(); try? layoutStore().save(guardLayouts) }
+            var gl = guardLayouts; try gl.setGroup(termGroup); try layoutStore().save(gl)
+            GroupState.session = GroupSession(); GroupState.session.apply(termGroup, desktops: [screen.uuid: 1])
+            let wrong = CountingMover()
+            let line = placeNewWindow(fakeElement, app: "Terminal", fake(wrong, flipAt: 2))
+            return line == nil && wrong.sets.isEmpty
+        })
         // WO-LAUNCH-MISSING S2: the start switches, the batch and the editor's Apply & Save, all on injected providers.
         let notes = "com.apple.Notes"
         let w2 = WindowInfo(windowID: 2, bundleID: notes, title: "n", frame: Frame(x: 20, y: 40, width: 300, height: 300), screenUUID: screen.uuid, order: 1)
@@ -490,6 +514,19 @@ func runUISmoke() -> Int32 {
             LaunchBatch.begin([notes], scope: nil, launching(mover, calls, windows: [wMoved, wNotes]))
             spin()
             return calls.ids == [notes] && mover.sets == [2] && lines.count == 1 && lines[0].contains("started Notes")
+        })
+        check("Groups: the sweep of a started app follows the applied group, and the batch scope still limits it", {
+            var gl = withNotes; try gl.setGroup(notesGroup); try layoutStore().save(gl)
+            defer { GroupState.session = GroupSession(); try? layoutStore().save(guardLayouts) }
+            GroupState.session = GroupSession(); GroupState.session.apply(notesGroup, desktops: [screen.uuid: 1])
+            lines = []; let mover = CountingMover(), calls = Calls()
+            LaunchBatch.begin([notes], scope: nil, launching(mover, calls, windows: [wMoved, wNotes]))
+            spin()
+            let followed = mover.sets == [2] && mover.frames[2] == screen.visibleFrame
+            lines = []; let scoped = CountingMover()
+            LaunchBatch.begin([notes], scope: WorkspaceSelection(screenUUID: "elsewhere", desktop: 1), launching(scoped, Calls(), windows: [wMoved, wNotes]))
+            spin()
+            return followed && scoped.sets.isEmpty
         })
         check("an app that opens no window is named late after the deadline", {
             try layoutStore().save(withNotes); defer { try? layoutStore().save(guardLayouts) }
