@@ -125,7 +125,7 @@ final class LaunchBatch {
         if !stopped, providers.context() == context {
             if let (report, listing, ctx) = try? guardedSnapshot(providers), report.trusted, listing.warnings.isEmpty,
                let layouts = try? providers.store().load(),
-               let plan = planRestore(layouts, windows: report.windows, screens: report.screens, desktops: ctx.desktops, scope: scope) {
+               let plan = planArrange(layouts, session: GroupState.session, windows: report.windows, screens: report.screens, desktops: ctx.desktops, scope: scope) {
                 let mine = Set(report.windows.filter { expected.contains($0.bundleID) }.map(\.windowID))
                 covered.formUnion(report.windows.filter { expected.contains($0.bundleID) }.map(\.bundleID))
                 let moves = plan.moves.filter { mine.contains($0.windowID) }

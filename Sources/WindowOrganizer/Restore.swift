@@ -172,6 +172,13 @@ func applyPendingGroups(paused: Bool, _ p: WorkspaceProviders = .live) -> String
 }
 
 /// "Restore": puts this desktop's windows back where they were remembered. Returns the menu's result line.
+/// The menu's Restore: an explicit arrange drops the applied groups of the visible desktops first, so new windows go by the layout again (WO-GROUPS G4).
+@MainActor
+func restoreFromMenu(_ p: WorkspaceProviders = .live) -> String? {
+    GroupState.session.clear(p.context().desktops.map { GroupKey(screen: $0.key, desktop: $0.value) })
+    return restoreNow(launch: .restore, p)
+}
+
 /// An automatic arrange (a trigger, not the menu) stays quiet when there is no permission or nothing remembered: nil,
 /// and never moves windows under a canvas preview the editor has not applied.
 @MainActor

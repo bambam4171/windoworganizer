@@ -61,7 +61,7 @@ final class WindowWatcher {
     }
 }
 
-/// Moves one new window to its remembered place; nothing else moves. Nil when it has no place.
+/// Moves one new window to its remembered place, or to its applied group's (WO-GROUPS G4); nothing else moves. Nil when it has no place.
 /// `recordUndo: false` keeps the Undo entries of the Restore that started the app.
 @MainActor
 func placeNew(_ element: AXUIElement, recordUndo: Bool = true, _ p: WorkspaceProviders = .live) -> (ApplyResult, desktop: Int?)? {
@@ -70,7 +70,7 @@ func placeNew(_ element: AXUIElement, recordUndo: Bool = true, _ p: WorkspacePro
           report.trusted, listing.warnings.isEmpty,
           let id = listing.elements.first(where: { CFEqual($0.value, element) })?.key,
           let layouts = try? p.store().load(),
-          let plan = planRestore(layouts, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
+          let plan = planArrange(layouts, session: GroupState.session, windows: report.windows, screens: report.screens, desktops: ctx.desktops)
     else { return nil }
     let r = RestoreSession.shared.apply(onlyWindow(plan, id), listing: listing, context: ctx, mover: p.mover(listing), stillValid: { p.context() == ctx }, recordUndo: recordUndo)
     return (r, report.desktop?.number)

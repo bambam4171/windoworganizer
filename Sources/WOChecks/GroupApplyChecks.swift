@@ -127,4 +127,73 @@ let groupApplyChecks: [(String, @Sendable () throws -> Void)] = [
         try expectEqual(undo.map(\.to), [anywhere, Frame(x: 50, y: 60, width: 300, height: 200)])
         try expectEqual(undo.map(\.windowID), [1, 2])
     }),
+    // WO-GROUPS G4: a new window of an applied group. placeNew and LaunchBatch plan with planArrange and keep onlyWindow's moves.
+    ("group new window 1: a tiled group re-grids with the new window, onlyWindow keeps the whole group", {
+        let a = grp("a", "A", [term]), l = layouts([a]), s = session([a])
+        let grid = tile(2, in: laptop.visibleFrame)
+        let old = [window(1, term, "a", 0, grid[0]), window(2, term, "b", 1, grid[1])]
+        try expectEqual(arrange(l, s, old)?.moves.count, 0)
+        let now = old + [window(3, term, "c", 2, anywhere)]
+        guard let plan = arrange(l, s, now) else { throw CheckFailure(description: "no plan") }
+        try expectEqual(plan.tiles, [[1, 2, 3]])
+        try expectEqual(onlyWindow(plan, 3).moves.map(\.windowID), [1, 2, 3])
+        try expectEqual(target(onlyWindow(plan, 3), 3), tile(3, in: laptop.visibleFrame)[2])
+    }),
+    ("group new window 2: a saved group gives the new window a free position, with none free it stays where it is", {
+        let pos = [GroupPosition(matcher: Matcher(bundleID: term, order: 0), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 1)),
+                   GroupPosition(matcher: Matcher(bundleID: term, order: 1), fraction: UnitRect(x: 0.5, y: 0, width: 0.5, height: 1))]
+        let sv = grp("v", "V", [term], mode: .saved(pos))
+        var l = layouts([sv])
+        _ = rememberDesktop(&l, windows: [window(9, term, "x", 0, Frame(x: 5, y: 45, width: 300, height: 200))], screens: [laptop], desktops: ["MBP": 1])
+        let s = session([sv])
+        let left = pos[0].fraction.frame(in: laptop.visibleFrame), right = pos[1].fraction.frame(in: laptop.visibleFrame)
+        let none = Plan(moves: [], skipped: [], unchanged: 0)
+        let one = [window(1, term, "a", 0, left), window(2, term, "n", 1, anywhere)]
+        try expectEqual(onlyWindow(arrange(l, s, one) ?? none, 2).moves.map(\.to), [right])
+        let full = [window(1, term, "a", 0, left), window(2, term, "b", 1, right), window(3, term, "n", 2, anywhere)]
+        let plan = arrange(l, s, full)
+        try expect(plan != nil, "the claimed window still makes a plan")
+        try expectEqual(onlyWindow(plan ?? none, 3).moves.count, 0)
+    }),
+    ("group new window 3: the group beats a rule for the new window, a non-member goes by the layout", {
+        var l = layouts([grp("a", "A", [term])])
+        l.setRule(AppRule(bundleID: term, desktop: 1, screen: "MBP", area: UnitRect(x: 0, y: 0, width: 0.25, height: 0.25)))
+        l.setRule(AppRule(bundleID: mail, desktop: 1, screen: "MBP", area: UnitRect(x: 0.5, y: 0.5, width: 0.5, height: 0.5)))
+        let s = session([grp("a", "A", [term])])
+        let ws = [window(1, term, "a", 0, anywhere), window(2, mail, "m", 0, anywhere)]
+        let plan = arrange(l, s, ws) ?? Plan(moves: [], skipped: [], unchanged: 0)
+        try expectEqual(target(onlyWindow(plan, 1), 1), laptop.visibleFrame)
+        try expectEqual(target(onlyWindow(plan, 2), 2), UnitRect(x: 0.5, y: 0.5, width: 0.5, height: 0.5).frame(in: laptop.visibleFrame))
+        try expectEqual(onlyWindow(plan, 2).moves.map(\.windowID), [2])
+    }),
+    ("group new window 4: a window on a screen or desktop with no applied group goes as without groups", {
+        let a = grp("a", "A", [term])
+        var l = layouts([a])
+        l.setRule(AppRule(bundleID: term, desktop: 1, screen: "DELL", area: UnitRect(x: 0, y: 0, width: 0.5, height: 0.5)))
+        let ws = [window(1, term, "t", 0, anywhere, on: dell)]
+        let screens = [laptop, dell], desks = ["MBP": 1, "DELL": 1]
+        try expect(arrange(l, session([a]), ws, screens: screens, desktops: desks) == planRestore(l, windows: ws, screens: screens, desktops: desks), "other screen")
+        let w2 = [window(2, term, "t", 0, anywhere)]
+        try expect(arrange(l, session([a]), w2, desktops: ["MBP": 2]) == planRestore(l, windows: w2, screens: [laptop], desktops: ["MBP": 2]), "other desktop")
+    }),
+    ("group new window 5: after an explicit Restore clears the session the new window goes by the layout again", {
+        var l = layouts([grp("a", "A", [term])])
+        l.setRule(AppRule(bundleID: term, desktop: 1, screen: "MBP", area: UnitRect(x: 0, y: 0, width: 0.25, height: 0.25)))
+        var s = session([grp("a", "A", [term])])
+        let ws = [window(1, term, "a", 0, anywhere)]
+        try expectEqual(target(arrange(l, s, ws), 1), laptop.visibleFrame)
+        s.clear([GroupKey(screen: "MBP", desktop: 1)])
+        try expectEqual(target(arrange(l, s, ws), 1), UnitRect(x: 0, y: 0, width: 0.25, height: 0.25).frame(in: laptop.visibleFrame))
+    }),
+    ("group new window 6: a group deleted or unassigned in the editor is ignored for a new window", {
+        let a = grp("a", "A", [term]), s = session([a])
+        var rule = Layouts()
+        rule.setRule(AppRule(bundleID: term, desktop: 1, screen: "MBP", area: UnitRect(x: 0, y: 0, width: 0.25, height: 0.25)))
+        let ws = [window(1, term, "a", 0, anywhere)]
+        let quarter = UnitRect(x: 0, y: 0, width: 0.25, height: 0.25).frame(in: laptop.visibleFrame)
+        try expectEqual(target(arrange(rule, s, ws), 1), quarter)
+        var un = a; un.desktops = []
+        var l2 = rule; l2.setGroup(un)
+        try expectEqual(target(arrange(l2, s, ws), 1), quarter)
+    }),
 ]
